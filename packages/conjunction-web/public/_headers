@@ -1,0 +1,7 @@
+# Cloudflare Pages cache hints.
+# The Blue Marble texture is large and never changes — cache it hard.
+/textures/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

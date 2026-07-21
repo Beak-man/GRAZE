@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRAZE — Conjunction Visualizer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0e14;
+        --panel: #11151f;
+        --panel-2: #161b28;
+        --border: #232a3a;
+        --text: #cdd6e4;
+        --muted: #7d8aa0;
+        --accent1: #4fc3f7;
+        --accent2: #ffb74d;
+        --risk-high: #ff5252;
+        --risk-med: #ffd740;
+        --risk-low: #69f0ae;
+        --mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+      }
+      body { display: flex; flex-direction: column; }
+
+      #disclaimer {
+        flex: none;
+        padding: 6px 14px;
+        background: #2a1f0a;
+        border-bottom: 1px solid #5c4a1a;
+        color: #ffd97a;
+        text-align: center;
+      }
+
+      #app { flex: 1; display: flex; min-height: 0; }
+
+      /* ---------- Sidebar ---------- */
+      #sidebar {
+        width: 420px;
+        min-width: 340px;
+        display: flex;
+        flex-direction: column;
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        min-height: 0;
+      }
+      #sidebar header {
+        padding: 12px 14px 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      #sidebar h1 { margin: 0; font-size: 18px; letter-spacing: 3px; }
+      #sidebar h1 span { color: var(--accent1); }
+      .meta { color: var(--muted); }
+
+      #status {
+        padding: 6px 14px;
+        color: var(--muted);
+        border-bottom: 1px solid var(--border);
+        min-height: 29px;
+      }
+
+      /* ---------- Filters ---------- */
+      #filters {
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .filter-label { color: var(--muted); width: 52px; flex: none; }
+      .filter-row label {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .filter-row input[type='checkbox'] { accent-color: var(--accent1); }
+      #miss-max { flex: 1; max-width: 180px; accent-color: var(--accent1); }
+      #miss-max-value { font-family: var(--mono); color: var(--text); }
+      #prob-threshold {
+        background: var(--panel-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        font: 12px var(--mono);
+        padding: 2px 4px;
+      }
+      #filter-count { color: var(--muted); margin-left: auto; }
+
+      #table-container { flex: 1; overflow-y: auto; min-height: 120px; }
+      .table-message { padding: 14px; color: var(--muted); }
+      .table-message .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+        flex-wrap: wrap;
+      }
+      .table-message button {
+        background: var(--panel-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 4px 14px;
+        cursor: pointer;
+      }
+      .table-message button:hover { border-color: var(--accent1); }
+      table#conjunctions {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      #conjunctions th {
+        position: sticky;
+        top: 0;
+        background: var(--panel-2);
+        color: var(--muted);
+        font-weight: 600;
+        text-align: left;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+        user-select: none;
+      }
+      #conjunctions th.sortable { cursor: pointer; }
+      #conjunctions th.sortable:hover { color: var(--text); }
+      #conjunctions td {
+        padding: 5px 8px;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 130px;
+      }
+      #conjunctions tbody tr { cursor: pointer; }
+      #conjunctions tbody tr:hover { background: #182032; }
+      #conjunctions tbody tr.selected { background: #1d2a45; }
+      tr.risk-high td:first-child { border-left: 3px solid var(--risk-high); }
+      tr.risk-med td:first-child { border-left: 3px solid var(--risk-med); }
+      tr.risk-low td:first-child { border-left: 3px solid var(--risk-low); }
+      td.prob.risk-high { color: var(--risk-high); }
+      td.prob.risk-med { color: var(--risk-med); }
+      td.prob.risk-low { color: var(--risk-low); }
+
+      /* ---------- Info panel ---------- */
+      #info-panel {
+        flex: none;
+        border-top: 1px solid var(--border);
+        padding: 10px 14px;
+        min-height: 150px;
+        max-height: 40%;
+        overflow-y: auto;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      #info-panel h2 {
+        margin: 0 0 6px;
+        font-size: 13px;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      #info-panel .obj1 { color: var(--accent1); }
+      #info-panel .obj2 { color: var(--accent2); }
+      #info-panel table { border-collapse: collapse; width: 100%; }
+      #info-panel td, #info-panel th {
+        padding: 2px 6px 2px 0;
+        text-align: left;
+        vertical-align: top;
+      }
+      #info-panel th { color: var(--muted); font-weight: 400; white-space: nowrap; }
+      .spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent1);
+        border-radius: 50%;
+        vertical-align: -3px;
+        margin-right: 8px;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* ---------- Footer ---------- */
+      #footer {
+        flex: none;
+        padding: 6px 14px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 11px;
+      }
+      #footer a { color: var(--muted); }
+      #footer .spinner { width: 10px; height: 10px; vertical-align: -1px; margin-right: 6px; }
+
+      /* ---------- Viewport ---------- */
+      #viewport { flex: 1; position: relative; min-width: 0; min-height: 0; }
+      #viewport canvas { display: block; }
+
+      #hud {
+        position: absolute;
+        top: 10px;
+        left: 12px;
+        padding: 8px 12px;
+        background: rgba(11, 14, 20, 0.75);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font-family: var(--mono);
+        font-size: 13px;
+        pointer-events: none;
+        white-space: pre;
+      }
+      #hud .label { color: var(--muted); }
+      #hud-countdown.imminent { color: var(--risk-high); }
+
+      #time-controls {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: 14px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        padding: 8px 14px;
+        background: rgba(11, 14, 20, 0.8);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        width: min(720px, calc(100% - 40px));
+      }
+      #time-controls button {
+        background: var(--panel-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        font: 14px var(--mono);
+        width: 34px;
+        height: 26px;
+        cursor: pointer;
+      }
+      #time-controls button:hover { border-color: var(--accent1); }
+      #time-slider { flex: 1; accent-color: var(--accent1); }
+      #speed-select {
+        background: var(--panel-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        font: 12px var(--mono);
+        padding: 3px;
+      }
+      .hidden { display: none !important; }
+
+      /* ---------- Tablet ---------- */
+      @media (max-width: 900px) {
+        #app { flex-direction: column; }
+        #sidebar {
+          width: 100%;
+          min-width: 0;
+          max-height: 45%;
+          border-right: none;
+          border-bottom: 1px solid var(--border);
+        }
+        #info-panel { max-height: 120px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="disclaimer">
+      ⚠ GRAZE uses publicly available GP/TLE data with SGP4 propagation.
+      For educational and awareness purposes only — not for operational conjunction assessment.
+    </div>
+    <div id="app">
+      <aside id="sidebar">
+        <header>
+          <h1 title="General Rendezvous Assessment and Zone Evaluator">GR<span>A</span>ZE</h1>
+          <div class="meta">General Rendezvous Assessment and Zone Evaluator</div>
+        </header>
+        <div id="status">Loading…</div>
+        <div id="filters">
+          <div class="filter-row" id="regime-filters">
+            <span class="filter-label">Regime</span>
+            <label><input type="checkbox" data-regime="LEO" checked />LEO</label>
+            <label><input type="checkbox" data-regime="MEO" checked />MEO</label>
+            <label><input type="checkbox" data-regime="GEO" checked />GEO</label>
+            <label><input type="checkbox" data-regime="HEO" checked />HEO</label>
+          </div>
+          <div class="filter-row" id="type-filters">
+            <span class="filter-label">Type</span>
+            <label><input type="checkbox" data-type="payload" checked />Payload</label>
+            <label><input type="checkbox" data-type="debris" checked />Debris</label>
+            <label><input type="checkbox" data-type="rocket-body" checked />R/B</label>
+          </div>
+          <div class="filter-row">
+            <span class="filter-label">Miss ≤</span>
+            <input type="range" id="miss-max" min="0" max="5" step="0.1" value="5" />
+            <span id="miss-max-value">5.0 km</span>
+          </div>
+          <div class="filter-row">
+            <span class="filter-label">Pc</span>
+            <select id="prob-threshold">
+              <option value="all" selected>show all</option>
+              <option value="1e-7">&gt; 1e-7</option>
+              <option value="1e-6">&gt; 1e-6</option>
+              <option value="1e-5">&gt; 1e-5</option>
+              <option value="1e-4">&gt; 1e-4</option>
+            </select>
+            <span id="filter-count"></span>
+          </div>
+        </div>
+        <div id="table-container">
+          <table id="conjunctions"></table>
+        </div>
+        <section id="info-panel">Select a conjunction to analyze it.</section>
+        <div id="footer">
+          <span id="refresh-indicator" class="spinner hidden"></span>
+          <span id="data-as-of">Data as of: —</span>
+          ·
+          <a href="https://celestrak.org/SOCRATES/" target="_blank" rel="noopener">Source: CelesTrak SOCRATES</a>
+        </div>
+      </aside>
+      <main id="viewport">
+        <div id="hud" class="hidden">
+          <div><span class="label">UTC   </span><span id="hud-time">—</span></div>
+          <div><span class="label">RANGE </span><span id="hud-distance">—</span></div>
+          <div><span class="label">TCA   </span><span id="hud-countdown">—</span></div>
+        </div>
+        <div id="time-controls" class="hidden">
+          <button id="play-pause" title="Play/Pause">⏸</button>
+          <input id="time-slider" type="range" min="0" max="1" step="1" value="0" />
+          <select id="speed-select" title="Playback speed">
+            <option value="1">1×</option>
+            <option value="10">10×</option>
+            <option value="30">30×</option>
+            <option value="60" selected>60×</option>
+            <option value="300">300×</option>
+          </select>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

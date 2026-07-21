@@ -1,0 +1,144 @@
+# GRAZE
+
+**General Rendezvous Assessment and Zone Evaluator** — a 3D satellite
+conjunction visualizer that replays upcoming close approaches between
+orbiting objects around an interactive Earth globe.
+
+> ⚠ **Disclaimer:** GRAZE uses publicly available GP/TLE data with SGP4
+> propagation. It is for educational and awareness purposes only — **not for
+> operational conjunction assessment.**
+
+![GRAZE screenshot placeholder](docs/screenshot.png)
+*(screenshot placeholder — run `npm run dev` and capture the app)*
+
+## What it does
+
+- Lists upcoming conjunctions from CelesTrak SOCRATES, color-coded by
+  collision probability, filterable by orbit regime (LEO/MEO/GEO/HEO),
+  object type (payload/debris/rocket body), miss distance, and probability.
+- Clicking a conjunction fetches both objects' orbital elements, propagates
+  them ±30 minutes around the time of closest approach (TCA) with SGP4, and
+  renders both orbits, TCA markers, and the miss-distance line in 3D.
+- A time animator replays the encounter with play/pause, scrubbing, and
+  1×–300× playback speed, with a HUD showing simulated UTC time, live
+  range between the objects, and a TCA countdown.
+- SOCRATES data refreshes automatically every 8 hours.
+
+## Architecture
+
+npm workspaces monorepo with two packages:
+
+| Package | Role |
+| --- | --- |
+| `packages/conjunction-core` | Pure TypeScript library: SOCRATES/GP fetchers, CSV parsing, SGP4 propagation (via satellite.js), close-approach search, orbit classification, interpolation. No UI dependencies. |
+| `packages/conjunction-web` | Three.js + vanilla TypeScript frontend: globe, orbit rendering, time animation, sidebar/info-panel UI. No orbital math. |
+
+The split is deliberate: **every orbital calculation lives in
+conjunction-core**, where it is unit-testable in Node without a browser, and
+reusable by other frontends (CLI tools, notebooks, alternative renderers).
+The web package only converts already-computed ECI states into scene
+coordinates and DOM updates.
+
+### A note on catalog numbers
+
+CelesTrak exhausts 5-digit NORAD catalog numbers around **2026-07-12**.
+Objects with IDs ≥ 100000 exist only in OMM/JSON format and cannot be
+represented as TLEs. GRAZE therefore uses `FORMAT=JSON` GP queries and
+`satellite.json2satrec()` exclusively — no TLE parsing anywhere.
+
+## Data sources
+
+- **Conjunction events:** [CelesTrak SOCRATES](https://celestrak.org/SOCRATES/)
+  raw CSV (`sort-minRange.csv` / `sort-maxProb.csv`)
+- **Orbital elements:** [CelesTrak GP API](https://celestrak.org/NORAD/elements/)
+  (`gp.php?CATNR={id}&FORMAT=JSON`, OMM format)
+
+No authentication is required for either. Please be considerate of
+CelesTrak's bandwidth — GRAZE caches GP fetches per session and refreshes
+SOCRATES data at most every 8 hours.
+
+## Running locally
+
+```sh
+npm install
+npm run dev      # starts the Vite dev server at http://localhost:5173
+```
+
+The dev server proxies `/SOCRATES` and `/NORAD` to celestrak.org
+(see `packages/conjunction-web/vite.config.ts`), so there are no CORS
+concerns in development.
+
+Other commands:
+
+```sh
+npm run build    # builds both packages; static site in packages/conjunction-web/dist
+npm test         # vitest unit tests across all packages
+npm run verify:propagation -w conjunction-core   # live ISS ground-track sanity check
+```
+
+## Deploying to Cloudflare Pages
+
+1. Push this repository to GitHub and connect it in the Cloudflare Pages
+   dashboard (*Workers & Pages → Create → Pages → Connect to Git*).
+2. Configure the build:
+   - **Build command:** `npm run build`
+   - **Build output directory:** `packages/conjunction-web/dist`
+3. Deploy. The Blue Marble texture and other assets are copied into `dist/`
+   automatically, and `public/_headers` ships long-lived cache headers for
+   the texture and hashed assets.
+
+In production the app calls `https://celestrak.org` directly. If CelesTrak's
+CORS policy blocks those requests, set up the proxy below.
+
+## Working offline / when CelesTrak is down
+
+A SOCRATES snapshot and matching GP element sets are bundled under
+`test-data/` (served from `packages/conjunction-web/public/test-data/`).
+There are three ways to use them:
+
+- When the live SOCRATES load fails, the app offers a **"Use local test
+  data"** button that switches both the conjunction list and GP lookups to
+  the bundled files for the session.
+- `VITE_USE_LOCAL_SOCRATES=true npm run dev` — always read the conjunction
+  list from the bundled snapshot.
+- `VITE_USE_LOCAL_GP=true npm run dev` — always read element sets from
+  `test-data/gp/{noradId}.json`.
+
+Refresh the bundled GP files with `npm run fetch:test-gp` (tries CelesTrak
+first, falls back to a public TLE mirror; resumable, so rerun it if some
+objects fail while rate-limited).
+
+## CORS proxy (Cloudflare Worker)
+
+A ~20-line proxy lives in [`cf-worker/worker.js`](cf-worker/worker.js). It
+forwards only the SOCRATES and GP paths to celestrak.org, caches responses
+at the edge for 30 minutes, and adds `Access-Control-Allow-Origin: *`.
+
+```sh
+cd cf-worker
+npx wrangler deploy        # prints the worker URL, e.g. https://graze-celestrak-proxy.<you>.workers.dev
+```
+
+Then rebuild the site with the proxy baked in:
+
+```sh
+VITE_CELESTRAK_BASE=https://graze-celestrak-proxy.<you>.workers.dev npm run build
+```
+
+(In the Cloudflare Pages dashboard, add `VITE_CELESTRAK_BASE` as a build
+environment variable instead.)
+
+## License
+
+[Apache 2.0](LICENSE).
+
+## Credits
+
+- [satellite.js](https://github.com/shashwatak/satellite-js) — SGP4/SDP4
+  propagation
+- [Three.js](https://threejs.org/) — 3D rendering
+- [CelesTrak](https://celestrak.org/) and **Dr. T.S. Kelso** — SOCRATES
+  conjunction data and the GP element API
+- NASA — Blue Marble Next Generation imagery (August 2004)
+- NASA — Black Marble imagery (2016)
+- Star catalog derived from the ESA Hipparcos mission, via NASA WorldWind (Apache 2.0).

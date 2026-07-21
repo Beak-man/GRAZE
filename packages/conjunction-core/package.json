@@ -1,0 +1,32 @@
+{
+  "name": "conjunction-core",
+  "version": "0.1.0",
+  "description": "Satellite conjunction analysis: SOCRATES/CelesTrak fetchers and SGP4 propagation",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "verify:propagation": "tsx scripts/verify-propagation.ts"
+  },
+  "dependencies": {
+    "satellite.js": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

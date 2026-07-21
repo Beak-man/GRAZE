@@ -1,0 +1,21 @@
+{
+  "name": "graze",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GRAZE (General Rendezvous Assessment and Zone Evaluator) — satellite conjunction visualizer",
+  "type": "module",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "packages/conjunction-core",
+    "packages/conjunction-web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces --if-present",
+    "dev": "npm run dev --workspace conjunction-web",
+    "fetch:test-gp": "node scripts/fetch-test-gp.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

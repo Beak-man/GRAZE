@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($ok = $false; foreach \\($i in 1..20\\) { try { $r = Invoke-WebRequest -Uri 'http://localhost:5173/' -UseBasicParsing -TimeoutSec 2; $ok = $true; break } catch { Start-Sleep -Milliseconds 500 } }; if \\(-not $ok\\) { 'Dev server did not respond'; exit 1 }; \"index: HTTP $\\($r.StatusCode\\)\"; $tex = Invoke-WebRequest -Uri 'http://localhost:5173/textures/earth.jpg' -UseBasicParsing -Method Head -TimeoutSec 10; \"texture: HTTP $\\($tex.StatusCode\\) \\($\\($tex.Headers['Content-Type']\\)\\)\"; $mod = Invoke-WebRequest -Uri 'http://localhost:5173/src/main.ts' -UseBasicParsing -TimeoutSec 10; \"main.ts transform: HTTP $\\($mod.StatusCode\\), $\\($mod.Content.Length\\) chars\"; $earthMod = Invoke-WebRequest -Uri 'http://localhost:5173/src/scene/earth.ts' -UseBasicParsing -TimeoutSec 10; \"earth.ts transform: HTTP $\\($earthMod.StatusCode\\)\")",
+      "PowerShell(Get-ChildItem packages/conjunction-web/dist -Recurse -File | ForEach-Object { \"$\\($_.FullName.Substring\\(\\(Resolve-Path 'packages/conjunction-web/dist'\\).Path.Length + 1\\)\\)  $\\([math]::Round\\($_.Length/1KB,1\\)\\) KB\" })",
+      "PowerShell(Get-ChildItem packages/conjunction-web/public -Recurse | Select-Object FullName, Length; Get-ChildItem -Path . -Filter stars.json -Recurse -Depth 2 -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch 'node_modules' } | Select-Object FullName, Length)",
+      "PowerShell(Get-ChildItem -Recurse -Directory -Filter 'test-data' | Where-Object { $_.FullName -notmatch 'node_modules' } | ForEach-Object { $_.FullName; Get-ChildItem $_.FullName -Recurse | Select-Object FullName, Length })",
+      "PowerShell(New-Item -ItemType Directory -Force packages/conjunction-web/public/test-data)",
+      "PowerShell(Copy-Item test-data/socrates-sample.csv packages/conjunction-web/public/test-data/socrates-sample.csv)",
+      "PowerShell($rows = Import-Csv test-data/socrates-sample.csv | Select-Object -First 10; $ids = @\\($rows.NORAD_CAT_ID_1\\) + @\\($rows.NORAD_CAT_ID_2\\) | Sort-Object -Unique; \"IDs needed \\($\\($ids.Count\\)\\): $\\($ids -join ', '\\)\"; try { $r = Invoke-WebRequest -Uri \"https://celestrak.org/NORAD/elements/gp.php?CATNR=$\\($ids[0]\\)&FORMAT=JSON\" -UseBasicParsing -TimeoutSec 20; \"probe $\\($ids[0]\\): HTTP $\\($r.StatusCode\\), $\\($r.Content.Substring\\(0, [Math]::Min\\(80, $r.Content.Length\\)\\)\\)\" } catch { \"probe failed: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri 'https://tle.ivanstanojevic.me/api/tle/55107' -UseBasicParsing -TimeoutSec 20; \"HTTP $\\($r.StatusCode\\)\"; $r.Content } catch { \"failed: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(npm run fetch:test-gp)"
+    ]
+  }
+}
