@@ -186,7 +186,11 @@
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
+<<<<<<< HEAD
    Copyright 2026 GRAZE contributors
+=======
+   Copyright [yyyy] [name of copyright owner]
+>>>>>>> e0d1b48e6c38c709130e1320cb18983d90190d37
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
