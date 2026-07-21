@@ -1,6 +1,7 @@
 import {
   classifyOrbitRegime,
   computeCloseApproach,
+  eciToThreeJs,
   fetchConjunctions,
   fetchOrbitalElements,
   parseSocratesCsv,
@@ -256,6 +257,17 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
   scene.overlay.add(animator.marker1, animator.marker2);
   const active = animator;
   unregisterTick = scene.onFrame((delta) => active.tick(delta));
+
+  // Swing the camera to look straight down the conjunction so it's centered on
+  // the globe rather than stranded at the limb. Aim at the midpoint of the two
+  // objects at TCA (they are only a miss-distance apart).
+  scene.focusOn(
+    eciToThreeJs({
+      x: (details.position1AtTca.positionEci.x + details.position2AtTca.positionEci.x) / 2,
+      y: (details.position1AtTca.positionEci.y + details.position2AtTca.positionEci.y) / 2,
+      z: (details.position1AtTca.positionEci.z + details.position2AtTca.positionEci.z) / 2,
+    }),
+  );
 
   showInfoDetails(event, details, summarizeOrbit(elements1), summarizeOrbit(elements2));
   setStatus(`Showing ${event.name1} × ${event.name2}`);

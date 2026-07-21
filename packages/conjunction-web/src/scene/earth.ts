@@ -186,6 +186,13 @@ export interface EarthScene {
    * live wall-clock time. Pass null to revert to real time.
    */
   setSimulatedTime(date: Date | null): void;
+  /**
+   * Smoothly swing the camera to look straight down a scene-space point (e.g.
+   * a conjunction's TCA position), so the selected event is centered on the
+   * globe instead of stranded at the limb. The current zoom distance is kept
+   * and OrbitControls stays interactive — a drag cancels the sweep.
+   */
+  focusOn(target: { x: number; y: number; z: number }): void;
 }
 
 export function createEarthScene(container: HTMLElement): EarthScene {
@@ -209,6 +216,26 @@ export function createEarthScene(container: HTMLElement): EarthScene {
   controls.enableDamping = true;
   controls.minDistance = EARTH_RADIUS + 0.4;
   controls.maxDistance = 400;
+
+  // Camera reorientation sweep (see focusOn). The direction is slerped and the
+  // radius lerped so the camera arcs cleanly around the globe. OrbitControls
+  // reads camera.position at the start of each update(), so per-frame writes
+  // here are picked up without a jump.
+  interface FocusTween {
+    fromDir: THREE.Vector3;
+    rotation: THREE.Quaternion;
+    fromRadius: number;
+    toRadius: number;
+    startMs: number;
+    durationMs: number;
+  }
+  let focusTween: FocusTween | null = null;
+  // A user drag/zoom takes over immediately — never fight their input.
+  controls.addEventListener('start', () => {
+    focusTween = null;
+  });
+  const easeInOutCubic = (t: number): number =>
+    t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
   // The Earth itself is shaded by the day/night ShaderMaterial, but keep a
   // sun-tracking directional light (plus faint ambient) for any lit meshes.
@@ -290,6 +317,23 @@ export function createEarthScene(container: HTMLElement): EarthScene {
     for (const callback of frameCallbacks) {
       callback(delta);
     }
+
+    if (focusTween !== null) {
+      const t = Math.min(1, (performance.now() - focusTween.startMs) / focusTween.durationMs);
+      const eased = easeInOutCubic(t);
+      const step = new THREE.Quaternion().slerpQuaternions(
+        new THREE.Quaternion(),
+        focusTween.rotation,
+        eased,
+      );
+      const dir = focusTween.fromDir.clone().applyQuaternion(step);
+      const radius = focusTween.fromRadius + (focusTween.toRadius - focusTween.fromRadius) * eased;
+      camera.position.copy(dir.multiplyScalar(radius));
+      if (t >= 1) {
+        focusTween = null;
+      }
+    }
+
     controls.update();
     renderer.render(scene, camera);
   });
@@ -302,6 +346,27 @@ export function createEarthScene(container: HTMLElement): EarthScene {
     },
     setSimulatedTime(date) {
       simulatedTime = date;
+    },
+    focusOn(target) {
+      const toDir = new THREE.Vector3(target.x, target.y, target.z);
+      if (toDir.lengthSq() === 0) {
+        return; // Degenerate target (Earth's center); nothing to aim at.
+      }
+      toDir.normalize();
+      const fromDir = camera.position.clone().normalize();
+      focusTween = {
+        fromDir,
+        rotation: new THREE.Quaternion().setFromUnitVectors(fromDir, toDir),
+        fromRadius: camera.position.length(),
+        // Keep the viewer's current zoom, just reorient.
+        toRadius: THREE.MathUtils.clamp(
+          camera.position.length(),
+          controls.minDistance,
+          controls.maxDistance,
+        ),
+        startMs: performance.now(),
+        durationMs: 700,
+      };
     },
   };
 }
