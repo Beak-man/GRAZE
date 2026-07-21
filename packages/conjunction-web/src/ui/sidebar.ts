@@ -2,6 +2,7 @@ import type { ConjunctionEvent, ObjectType, OrbitRegime } from 'conjunction-core
 import { formatProbability, formatRange, formatTca } from '../format.js';
 import { eventPassesFilters } from './filters.js';
 import type { ConjunctionFilters } from './filters.js';
+import { MISS_TIP, PC_TIP, TCA_TIP } from './tooltipText.js';
 
 export type SortKey = 'minRange' | 'maxProbability';
 
@@ -152,23 +153,34 @@ export class Sidebar {
     row.append(
       this.buildHeaderCell('Object 1'),
       this.buildHeaderCell('Object 2'),
-      this.buildHeaderCell('TCA (UTC)'),
-      this.buildHeaderCell('Miss', 'minRange'),
-      this.buildHeaderCell('Max Pc', 'maxProbability'),
+      this.buildHeaderCell('TCA (UTC)', undefined, TCA_TIP),
+      this.buildHeaderCell('Miss', 'minRange', MISS_TIP),
+      this.buildHeaderCell('Max Pc', 'maxProbability', PC_TIP),
     );
     head.append(row);
     return head;
   }
 
-  private buildHeaderCell(label: string, sortKey?: SortKey): HTMLTableCellElement {
+  private buildHeaderCell(label: string, sortKey?: SortKey, tip?: string): HTMLTableCellElement {
     const cell = document.createElement('th');
-    cell.textContent = label;
+    const text = document.createElement('span');
+    text.textContent = label;
     if (sortKey !== undefined) {
       cell.classList.add('sortable');
       if (this.sortKey === sortKey) {
-        cell.textContent = `${label} ${this.sortAscending ? '▲' : '▼'}`;
+        text.textContent = `${label} ${this.sortAscending ? '▲' : '▼'}`;
       }
       cell.addEventListener('click', () => this.sortBy(sortKey));
+    }
+    cell.append(text);
+    if (tip !== undefined) {
+      const icon = document.createElement('button');
+      icon.type = 'button';
+      icon.className = 'tip-icon';
+      icon.textContent = 'i';
+      icon.setAttribute('aria-label', `About ${label}`);
+      icon.setAttribute('data-tip', tip);
+      cell.append(icon);
     }
     return cell;
   }

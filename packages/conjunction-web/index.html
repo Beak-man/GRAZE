@@ -259,6 +259,40 @@
       }
       .hidden { display: none !important; }
 
+      /* ---------- Tooltips ---------- */
+      .tip-icon {
+        display: inline-flex;
+        flex: none;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
+        margin: 0;
+        padding: 0;
+        border: 1px solid var(--muted);
+        border-radius: 50%;
+        background: none;
+        color: var(--muted);
+        font: 10px/1 var(--mono);
+        cursor: help;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .tip-icon:hover, .tip-icon:focus-visible { color: var(--text); border-color: var(--accent1); }
+      #conjunctions th .tip-icon { margin-left: 5px; }
+      .tooltip-bubble {
+        position: fixed;
+        z-index: 100;
+        max-width: 240px;
+        padding: 6px 10px;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        color: var(--text);
+        font: 11px/1.4 "Segoe UI", system-ui, sans-serif;
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+        pointer-events: none;
+      }
+
       /* ---------- Tablet ---------- */
       @media (max-width: 900px) {
         #app { flex-direction: column; }
@@ -288,6 +322,7 @@
         <div id="filters">
           <div class="filter-row" id="regime-filters">
             <span class="filter-label">Regime</span>
+            <button type="button" class="tip-icon" aria-label="About Regime" data-tip="Orbit regime — LEO (Low Earth Orbit, &lt;2,000 km altitude), MEO (Medium Earth Orbit), GEO (Geostationary Orbit, ~35,786 km), HEO (Highly Elliptical Orbit).">i</button>
             <label><input type="checkbox" data-regime="LEO" checked />LEO</label>
             <label><input type="checkbox" data-regime="MEO" checked />MEO</label>
             <label><input type="checkbox" data-regime="GEO" checked />GEO</label>
@@ -295,17 +330,20 @@
           </div>
           <div class="filter-row" id="type-filters">
             <span class="filter-label">Type</span>
+            <button type="button" class="tip-icon" aria-label="About Type" data-tip="Object type — Payload (active or inactive satellite), Debris (fragmentation or mission-related debris), R/B (spent rocket body).">i</button>
             <label><input type="checkbox" data-type="payload" checked />Payload</label>
             <label><input type="checkbox" data-type="debris" checked />Debris</label>
             <label><input type="checkbox" data-type="rocket-body" checked />R/B</label>
           </div>
           <div class="filter-row">
             <span class="filter-label">Miss ≤</span>
+            <button type="button" class="tip-icon" aria-label="About miss distance" data-tip="Miss distance — predicted closest separation between the two objects at TCA (time of closest approach), in kilometers.">i</button>
             <input type="range" id="miss-max" min="0" max="5" step="0.1" value="5" />
             <span id="miss-max-value">5.0 km</span>
           </div>
           <div class="filter-row">
             <span class="filter-label">Pc</span>
+            <button type="button" class="tip-icon" aria-label="About probability of collision" data-tip="Probability of collision (Pc) — estimated chance the two objects collide, based on position uncertainty. Higher = greater risk.">i</button>
             <select id="prob-threshold">
               <option value="all" selected>show all</option>
               <option value="1e-7">&gt; 1e-7</option>

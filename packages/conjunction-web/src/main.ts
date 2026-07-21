@@ -20,6 +20,7 @@ import { TimeAnimator } from './scene/animator.js';
 import type { TimeAnimatorElements } from './scene/animator.js';
 import { Sidebar } from './ui/sidebar.js';
 import { showInfoDetails, showInfoError, showInfoLoading, showInfoPlaceholder } from './ui/infoPanel.js';
+import { initTooltips } from './ui/tooltip.js';
 import { formatTca } from './format.js';
 
 // In dev, same-origin requests go through the Vite proxy (vite.config.ts).
@@ -134,6 +135,8 @@ function getElements(noradId: number): Promise<OrbitalElements> {
 const sidebar = new Sidebar((event) => {
   void selectConjunction(event);
 });
+
+initTooltips();
 
 function clearVisualization(): void {
   if (unregisterTick !== null) {
