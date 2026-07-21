@@ -8,8 +8,8 @@ orbiting objects around an interactive Earth globe.
 > propagation. It is for educational and awareness purposes only — **not for
 > operational conjunction assessment.**
 
-![GRAZE screenshot placeholder](docs/screenshot.png)
-*(screenshot placeholder — run `npm run dev` and capture the app)*
+<img width="1427" height="862" alt="GRAZE screenshot" src="https://github.com/user-attachments/assets/ad311f7d-bf1c-4583-bd1e-ec0a0eeece55" />
+
 
 ## What it does
 
