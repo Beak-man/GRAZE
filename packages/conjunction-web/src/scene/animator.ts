@@ -41,6 +41,8 @@ export class TimeAnimator {
     private readonly orbit2: PropagatedPosition[],
     tca: Date,
     private readonly el: TimeAnimatorElements,
+    /** Called with the current simulated instant every time it changes (tick or scrub). */
+    private readonly onTimeChange: (time: Date) => void,
   ) {
     const range = sharedTimeRange(orbit1, orbit2);
     if (range === null) {
@@ -112,6 +114,7 @@ export class TimeAnimator {
     this.el.countdown.textContent = formatCountdown(toTca);
     this.el.countdown.classList.toggle('imminent', Math.abs(toTca) <= IMMINENT_MS);
     this.el.slider.value = String(this.simMs);
+    this.onTimeChange(time);
   }
 
   /** Advance simulated time; call once per rendered frame. */

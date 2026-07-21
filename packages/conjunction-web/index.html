@@ -57,6 +57,7 @@
       }
       #sidebar h1 { margin: 0; font-size: 18px; letter-spacing: 3px; }
       #sidebar h1 span { color: var(--accent1); }
+      #sidebar h1 .tip-icon { margin-left: 6px; vertical-align: middle; letter-spacing: normal; }
       .meta { color: var(--muted); }
 
       #status {
@@ -315,7 +316,7 @@
     <div id="app">
       <aside id="sidebar">
         <header>
-          <h1 title="General Rendezvous Assessment and Zone Evaluator">GR<span>A</span>ZE</h1>
+          <h1 title="General Rendezvous Assessment and Zone Evaluator">GR<span>A</span>ZE<button type="button" class="tip-icon" aria-label="About GRAZE" data-tip="GRAZE (General Rendezvous Assessment and Zone Evaluator) — a 3D visualizer for upcoming satellite conjunctions from CelesTrak SOCRATES data. This is an early beta; see the disclaimer above. Source, issues, and license are on GitHub (linked in the footer).">i</button></h1>
           <div class="meta">General Rendezvous Assessment and Zone Evaluator</div>
         </header>
         <div id="status">Loading…</div>
@@ -363,6 +364,8 @@
           <span id="data-as-of">Data as of: —</span>
           ·
           <a href="https://celestrak.org/SOCRATES/" target="_blank" rel="noopener">Source: CelesTrak SOCRATES</a>
+          ·
+          <a href="https://github.com/Beak-man/GRAZE" target="_blank" rel="noopener">GitHub</a>
         </div>
       </aside>
       <main id="viewport">

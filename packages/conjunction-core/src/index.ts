@@ -16,5 +16,6 @@ export {
   interpolateStateAt,
   classifyOrbitRegime,
   getSunDirectionEci,
+  getEarthRotationRadians,
 } from './analysis.js';
 export type { OrbitSummary, InterpolatedState, OrbitRegime } from './analysis.js';

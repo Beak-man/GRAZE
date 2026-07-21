@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { eciToThreeJs, getSunDirectionEci } from 'conjunction-core';
+import { eciToThreeJs, getEarthRotationRadians, getSunDirectionEci } from 'conjunction-core';
 import { createAtmosphere } from './atmosphere.js';
 import { createStarfield } from './starfield.js';
 import { createSun } from './sun.js';
@@ -9,6 +9,12 @@ import { createSun } from './sun.js';
 export const EARTH_RADIUS = 6.371;
 /** Atmosphere shell tops out ~100 km above the surface. */
 const ATMOSPHERE_RADIUS = EARTH_RADIUS + 0.1;
+/**
+ * Altitude of the atmosphere's average density, as a fraction of the shell
+ * thickness. Must match the sky shell's rayleighScaleDepth in atmosphere.ts so
+ * the ground scattering (below) and the sky scattering stay consistent.
+ */
+const RAYLEIGH_SCALE_DEPTH = 0.25;
 
 /** Real solar direction mapped into scene space as a unit vector. */
 export function sunDirectionScene(date: Date, target: THREE.Vector3): THREE.Vector3 {
@@ -19,13 +25,104 @@ export function sunDirectionScene(date: Date, target: THREE.Vector3): THREE.Vect
   return target.set(v.x, v.y, v.z).normalize();
 }
 
+// Atmospheric in-scattering for a point on the ground, ported from NASA
+// WorldWind's GroundProgram (Sean O'Neil, GPU Gems 2 ch. 16, Apache 2.0). The
+// scattering integral runs per vertex and produces primaryColor (in-scattered
+// skylight — aerial perspective) and secondaryColor (surface attenuation),
+// combined with the day imagery in the fragment shader. This shares its
+// constants and scaleFunc with the sky shell in atmosphere.ts, so the day-side
+// surface and the limb halo are lit by the same model.
 const EARTH_VERTEX = /* glsl */ `
+  precision highp float;
+
+  const int SAMPLE_COUNT = 2;
+  const float SAMPLES = 2.0;
+
+  const float PI = 3.141592653589;
+  const float Kr = 0.0025;
+  const float Kr4PI = Kr * 4.0 * PI;
+  const float Km = 0.0015;
+  const float Km4PI = Km * 4.0 * PI;
+  const float ESun = 15.0;
+  const float KmESun = Km * ESun;
+  const float KrESun = Kr * ESun;
+  // 1 / wavelength^4 for (650, 570, 475) nm — why the sky is blue.
+  const vec3 invWavelength = vec3(5.60204474633241, 9.473284437923038, 19.643802610477206);
+
+  uniform vec3 sunDirection;
+  uniform float atmosphereRadius;
+  uniform float atmosphereRadius2;
+  uniform float globeRadius;
+  uniform float scale;               // 1 / (atmosphereRadius - globeRadius)
+  uniform float scaleDepth;          // altitude of the atmosphere's average density
+  uniform float scaleOverScaleDepth; // scale / scaleDepth
+
   out vec2 vUv;
   out vec3 vWorldNormal;
+  out vec3 vWorldPosition;
+  out vec3 primaryColor;
+  out vec3 secondaryColor;
+
+  float scaleFunc(float cosAngle) {
+    float x = 1.0 - cosAngle;
+    return scaleDepth * exp(-0.00287 + x * (0.459 + x * (3.83 + x * (-6.80 + x * 5.25))));
+  }
 
   void main() {
     vUv = uv;
     vWorldNormal = normalize(mat3(modelMatrix) * normal);
+    // The globe is centered on the origin, so its world position doubles as
+    // the vector from Earth's center used throughout the scattering integral.
+    vec3 point = (modelMatrix * vec4(position, 1.0)).xyz;
+    vWorldPosition = point;
+
+    vec3 ray = point - cameraPosition;
+    float far = length(ray);
+    ray /= far;
+
+    float eyeMagnitude = length(cameraPosition);
+    vec3 start;
+    if (eyeMagnitude < atmosphereRadius) {
+      // Camera inside the atmosphere: integrate from the eye.
+      start = cameraPosition;
+    } else {
+      // Camera in space: start at the ray's near intersection with the shell.
+      float B = 2.0 * dot(cameraPosition, ray);
+      float C = eyeMagnitude * eyeMagnitude - atmosphereRadius2;
+      float det = max(0.0, B * B - 4.0 * C);
+      float near = 0.5 * (-B - sqrt(det));
+      start = cameraPosition + ray * near;
+      far -= near;
+    }
+
+    float pointMagnitude = length(point);
+    float startDepth = exp((globeRadius - atmosphereRadius) / scaleDepth);
+    float eyeAngle = dot(-ray, point) / pointMagnitude;
+    float lightAngle = dot(sunDirection, point) / pointMagnitude;
+    float eyeScale = scaleFunc(eyeAngle);
+    float lightScale = scaleFunc(lightAngle);
+    float eyeOffset = startDepth * eyeScale;
+    float temp = lightScale + eyeScale;
+
+    float sampleLength = far / SAMPLES;
+    float scaledLength = sampleLength * scale;
+    vec3 sampleRay = ray * sampleLength;
+    vec3 samplePoint = start + sampleRay * 0.5;
+
+    vec3 frontColor = vec3(0.0);
+    vec3 attenuate = vec3(0.0);
+    for (int i = 0; i < SAMPLE_COUNT; i++) {
+      float height = length(samplePoint);
+      float depth = exp(scaleOverScaleDepth * (globeRadius - height));
+      float scatter = depth * temp - eyeOffset;
+      attenuate = exp(-scatter * (invWavelength * Kr4PI + Km4PI));
+      frontColor += attenuate * (depth * scaledLength);
+      samplePoint += sampleRay;
+    }
+
+    primaryColor = frontColor * (invWavelength * KrESun + KmESun);
+    secondaryColor = attenuate;
+
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
@@ -42,16 +139,38 @@ const EARTH_FRAGMENT = /* glsl */ `
 
   in vec2 vUv;
   in vec3 vWorldNormal;
+  in vec3 vWorldPosition;
+  in vec3 primaryColor;
+  in vec3 secondaryColor;
 
   out vec4 fragColor;
 
   void main() {
-    float cosSun = dot(normalize(vWorldNormal), sunDirection);
+    vec3 normal = normalize(vWorldNormal);
+    float cosSun = dot(normal, sunDirection);
     // Terminator softened over ~15°: smoothstep across ±sin(7.5°) ≈ ±0.1305.
     float dayFactor = smoothstep(-0.1305, 0.1305, cosSun);
-    vec3 day = texture(dayTexture, vUv).rgb * (0.25 + 0.75 * max(cosSun, 0.0));
-    // City lights, plus a faint blue ambient so the night limb isn't void.
-    vec3 night = texture(nightTexture, vUv).rgb + vec3(0.012, 0.016, 0.024);
+
+    // Day side: surface reflectance attenuated by the atmosphere (secondary)
+    // plus in-scattered skylight (primary — aerial perspective), then tone-
+    // mapped to match the sky shell. This is what gives the day-side ocean its
+    // luminous blue depth and preserves the Blue Marble shelf/deep-sea tonal
+    // range, versus a flat texture * cosine dimming that washed both out.
+    vec3 dayTex = texture(dayTexture, vUv).rgb;
+    vec3 dayScatter = primaryColor + dayTex * secondaryColor;
+    const float exposure = 2.0;
+    vec3 day = vec3(1.0) - exp(-exposure * dayScatter);
+
+    // Night side: city lights, plus a faint rim light confined to the grazing
+    // silhouette edge so the globe reads against the starfield. nightOnly fully
+    // decays before the twilight band (dayFactor's ±0.1305 range) begins, so it
+    // never overlaps any day-side contribution.
+    vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+    float rim = pow(1.0 - clamp(dot(normal, viewDir), 0.0, 1.0), 4.0);
+    float nightOnly = 1.0 - smoothstep(-0.3, -0.1305, cosSun);
+    vec3 limbGlow = rim * nightOnly * vec3(0.05, 0.065, 0.1);
+    vec3 night = texture(nightTexture, vUv).rgb + limbGlow;
+
     fragColor = vec4(mix(night, day, dayFactor), 1.0);
   }
 `;
@@ -61,6 +180,12 @@ export interface EarthScene {
   overlay: THREE.Group;
   /** Register a per-frame callback; returns an unregister function. */
   onFrame(callback: (deltaSeconds: number) => void): () => void;
+  /**
+   * Drive the Sun direction and Earth's rotation from a specific instant
+   * (e.g. the currently scrubbed point in a conjunction replay) instead of
+   * live wall-clock time. Pass null to revert to real time.
+   */
+  setSimulatedTime(date: Date | null): void;
 }
 
 export function createEarthScene(container: HTMLElement): EarthScene {
@@ -108,6 +233,16 @@ export function createEarthScene(container: HTMLElement): EarthScene {
       dayTexture: { value: loadEarthTexture('/textures/earth.jpg') },
       nightTexture: { value: loadEarthTexture('/textures/earth_night.png') },
       sunDirection: { value: sunDirection },
+      // Ground-scattering uniforms — same values as the sky shell in
+      // atmosphere.ts, so both are lit by one consistent atmosphere model.
+      atmosphereRadius: { value: ATMOSPHERE_RADIUS },
+      atmosphereRadius2: { value: ATMOSPHERE_RADIUS * ATMOSPHERE_RADIUS },
+      globeRadius: { value: EARTH_RADIUS },
+      scale: { value: 1 / (ATMOSPHERE_RADIUS - EARTH_RADIUS) },
+      scaleDepth: { value: RAYLEIGH_SCALE_DEPTH },
+      scaleOverScaleDepth: {
+        value: 1 / (ATMOSPHERE_RADIUS - EARTH_RADIUS) / RAYLEIGH_SCALE_DEPTH,
+      },
     },
   });
   const earth = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS, 96, 48), earthMaterial);
@@ -137,12 +272,17 @@ export function createEarthScene(container: HTMLElement): EarthScene {
 
   const frameCallbacks = new Set<(deltaSeconds: number) => void>();
   const clock = new THREE.Clock();
+  let simulatedTime: Date | null = null;
   renderer.setAnimationLoop(() => {
     const delta = clock.getDelta();
 
-    // The Sun tracks real wall-clock time every frame; everything sun-driven
-    // (texture blend, scattering, light, sprite) shares one direction.
-    sunDirectionScene(new Date(), sunDirection);
+    // Everything time-driven (Sun direction, Earth's rotation, and
+    // everything sun-driven — texture blend, scattering, light, sprite)
+    // shares one instant: live wall-clock time by default, or whichever
+    // moment is being scrubbed in an active conjunction replay.
+    const currentTime = simulatedTime ?? new Date();
+    sunDirectionScene(currentTime, sunDirection);
+    earth.rotation.y = getEarthRotationRadians(currentTime);
     atmosphere.setSunDirection(sunDirection);
     sun.setDirection(sunDirection);
     sunLight.position.copy(sunDirection).multiplyScalar(200);
@@ -159,6 +299,9 @@ export function createEarthScene(container: HTMLElement): EarthScene {
     onFrame(callback) {
       frameCallbacks.add(callback);
       return () => frameCallbacks.delete(callback);
+    },
+    setSimulatedTime(date) {
+      simulatedTime = date;
     },
   };
 }

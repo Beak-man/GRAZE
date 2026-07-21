@@ -1,3 +1,4 @@
+import { gstime } from 'satellite.js';
 import type { EciVector, OrbitalElements, PropagatedPosition } from './types.js';
 
 /** Standard gravitational parameter of Earth, km^3/s^2 (WGS-84). */
@@ -79,6 +80,17 @@ export function getSunDirectionEci(date: Date): EciVector {
     y: Math.cos(obliquity) * Math.sin(eclipticLongitude),
     z: Math.sin(obliquity) * Math.sin(eclipticLongitude),
   };
+}
+
+/**
+ * Earth's rotation angle (Greenwich Mean Sidereal Time), radians, measured
+ * from the ECI x-axis (vernal equinox) to the Greenwich meridian. Rotating an
+ * Earth-fixed mesh by this angle about the ECI z-axis — scene +Y, per
+ * eciToThreeJs — keeps it aligned with ECI-frame positions (satellites, Sun
+ * direction) at any instant.
+ */
+export function getEarthRotationRadians(date: Date): number {
+  return gstime(date);
 }
 
 /** Euclidean distance between two ECI positions, km. */

@@ -64,9 +64,23 @@ npm install
 npm run dev      # starts the Vite dev server at http://localhost:5173
 ```
 
+To spare CelesTrak's rate limiter, **`npm run dev` uses the bundled
+`test-data/` snapshot by default** and makes no live requests. When you
+specifically need to exercise the live API, opt in:
+
+```sh
+VITE_USE_LIVE=true npm run dev
+```
+
 The dev server proxies `/SOCRATES` and `/NORAD` to celestrak.org
 (see `packages/conjunction-web/vite.config.ts`), so there are no CORS
 concerns in development.
+
+In production the app persists the conjunction list (~8 h) and GP element
+sets (~24 h) in `localStorage`, so a reload within those windows makes no
+CelesTrak requests. The `#data-as-of` footer shows when the cached data was
+fetched. The bundled Cloudflare Worker edge-caches with matching TTLs as a
+backstop for cold clients.
 
 Other commands:
 

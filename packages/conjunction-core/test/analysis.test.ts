@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyOrbitRegime,
   eciDistance,
+  getEarthRotationRadians,
   getSunDirectionEci,
   interpolateStateAt,
   summarizeOrbit,
@@ -110,6 +111,25 @@ describe('getSunDirectionEci', () => {
     expect(Math.abs(sun.x)).toBeLessThan(0.01);
     expect(sun.y).toBeCloseTo(Math.cos(23.437 * (Math.PI / 180)), 2);
     expect(sun.z).toBeCloseTo(Math.sin(23.437 * (Math.PI / 180)), 2);
+  });
+});
+
+describe('getEarthRotationRadians', () => {
+  it('matches the known GMST at the J2000.0 epoch (~280.46°)', () => {
+    const gmst = getEarthRotationRadians(new Date('2000-01-01T12:00:00Z'));
+    expect(gmst).toBeCloseTo(280.46061837504728 * (Math.PI / 180), 4);
+  });
+
+  it('returns to the same angle after one sidereal day (~23h56m4s)', () => {
+    const start = new Date('2026-06-12T00:00:00Z');
+    const siderealDayMs = 86_164_090.5;
+    const end = new Date(start.getTime() + siderealDayMs);
+    // A full sidereal day is one complete rotation, so GMST wraps back to
+    // (approximately) the same angle — pick a start well clear of the 0/2π
+    // seam so the wrapped values are directly comparable.
+    expect(getEarthRotationRadians(start)).toBeGreaterThan(1);
+    expect(getEarthRotationRadians(start)).toBeLessThan(2 * Math.PI - 1);
+    expect(getEarthRotationRadians(end)).toBeCloseTo(getEarthRotationRadians(start), 5);
   });
 });
 

@@ -21,6 +21,7 @@ import type { TimeAnimatorElements } from './scene/animator.js';
 import { Sidebar } from './ui/sidebar.js';
 import { showInfoDetails, showInfoError, showInfoLoading, showInfoPlaceholder } from './ui/infoPanel.js';
 import { initTooltips } from './ui/tooltip.js';
+import { readCache, writeCache } from './cache.js';
 import { formatTca } from './format.js';
 
 // In dev, same-origin requests go through the Vite proxy (vite.config.ts).
@@ -37,6 +38,13 @@ const CELESTRAK_BASE_URL = import.meta.env.DEV
 const TOP_CONJUNCTIONS = 10;
 const REFRESH_INTERVAL_MS = 8 * 60 * 60 * 1000;
 const CLASSIFY_CONCURRENCY = 4;
+// Persistent-cache freshness windows. SOCRATES regenerates a few times a day
+// (matching REFRESH_INTERVAL_MS); GP element sets change slowly, so cache them
+// longer. Reloads within these windows make no CelesTrak requests.
+const SOCRATES_TTL_MS = 8 * 60 * 60 * 1000;
+const GP_TTL_MS = 24 * 60 * 60 * 1000;
+const SOCRATES_CACHE_KEY = `socrates:${TOP_CONJUNCTIONS}:MINRANGE`;
+const gpCacheKey = (noradId: number): string => `gp:${noradId}`;
 /** Bundled SOCRATES snapshot for when CelesTrak is unreachable. */
 const LOCAL_TEST_DATA_URL = '/test-data/socrates-sample.csv';
 /** Bundled GP element sets ({noradId}.json), refreshed via npm run fetch:test-gp. */
@@ -46,11 +54,14 @@ function envFlag(value: unknown): boolean {
   return value === 'true';
 }
 
-// Build-time switches for working against the bundled test data instead of
-// live CelesTrak (e.g. while rate-limited): VITE_USE_LOCAL_SOCRATES=true
-// and/or VITE_USE_LOCAL_GP=true.
-const USE_LOCAL_SOCRATES = envFlag(import.meta.env.VITE_USE_LOCAL_SOCRATES);
-let useLocalGp = envFlag(import.meta.env.VITE_USE_LOCAL_GP);
+// Dev builds default to the bundled test data so routine `npm run dev` never
+// touches CelesTrak (they rate-limit aggressive clients). Opt back into live
+// requests when you specifically need to exercise the API: VITE_USE_LIVE=true.
+// Production is unaffected. The explicit VITE_USE_LOCAL_* switches still force
+// bundled data in any mode (e.g. while rate-limited in a live build).
+const DEV_DEFAULT_LOCAL = import.meta.env.DEV && !envFlag(import.meta.env.VITE_USE_LIVE);
+const USE_LOCAL_SOCRATES = envFlag(import.meta.env.VITE_USE_LOCAL_SOCRATES) || DEV_DEFAULT_LOCAL;
+let useLocalGp = envFlag(import.meta.env.VITE_USE_LOCAL_GP) || DEV_DEFAULT_LOCAL;
 
 const CORS_HELP =
   'If this keeps happening, the browser is likely blocked by CORS or a network ' +
@@ -104,27 +115,50 @@ const elementsCache = new Map<number, Promise<OrbitalElements>>();
 
 /** Load a bundled element set; fails clearly for objects not in test-data/gp. */
 async function fetchLocalElements(noradId: number): Promise<OrbitalElements> {
+  const missingMessage =
+    `No bundled GP data for NORAD ${noradId}. This object is in the test snapshot ` +
+    'but has no test-data/gp file — run "npm run fetch:test-gp", or use live data ' +
+    'with VITE_USE_LIVE=true.';
   const response = await fetch(`${LOCAL_GP_BASE_URL}/${noradId}.json`);
   if (!response.ok) {
-    throw new Error(
-      `No bundled GP data for NORAD ${noradId} (HTTP ${response.status}). ` +
-        'Run "npm run fetch:test-gp" when CelesTrak is reachable again.',
-    );
+    throw new Error(`${missingMessage} (HTTP ${response.status})`);
   }
-  const data = (await response.json()) as OrbitalElements[];
-  const [first] = data;
+  // The dev server answers a missing public file with index.html (HTTP 200),
+  // so a body that isn't valid JSON means the file genuinely isn't there —
+  // surface the actionable message rather than a raw "Unexpected token '<'".
+  const body = await response.text();
+  let data: unknown;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    throw new Error(missingMessage);
+  }
+  if (!Array.isArray(data) || data.length === 0) {
+    throw new Error(`Bundled GP file for NORAD ${noradId} is empty`);
+  }
+  const [first] = data as OrbitalElements[];
   if (first === undefined) {
     throw new Error(`Bundled GP file for NORAD ${noradId} is empty`);
   }
   return first;
 }
 
+/** Fetch live GP elements, serving from (and populating) the localStorage cache. */
+async function fetchLiveElements(noradId: number): Promise<OrbitalElements> {
+  const hit = readCache<OrbitalElements>(gpCacheKey(noradId), GP_TTL_MS);
+  if (hit !== null) {
+    return hit.data;
+  }
+  const elements = await fetchOrbitalElements(noradId, { baseUrl: CELESTRAK_BASE_URL });
+  writeCache(gpCacheKey(noradId), elements);
+  return elements;
+}
+
 function getElements(noradId: number): Promise<OrbitalElements> {
   let cached = elementsCache.get(noradId);
   if (cached === undefined) {
-    cached = useLocalGp
-      ? fetchLocalElements(noradId)
-      : fetchOrbitalElements(noradId, { baseUrl: CELESTRAK_BASE_URL });
+    // Bundled reads stay out of the persistent cache (which is live-only).
+    cached = useLocalGp ? fetchLocalElements(noradId) : fetchLiveElements(noradId);
     // Drop failed fetches from the cache so a retry can succeed.
     cached.catch(() => elementsCache.delete(noradId));
     elementsCache.set(noradId, cached);
@@ -147,6 +181,7 @@ function clearVisualization(): void {
     animator.dispose();
     animator = null;
   }
+  scene.setSimulatedTime(null);
   for (const child of [...scene.overlay.children]) {
     disposeObject(child);
     scene.overlay.remove(child);
@@ -155,6 +190,10 @@ function clearVisualization(): void {
 
 async function selectConjunction(event: ConjunctionEvent): Promise<void> {
   const token = ++selectionToken;
+  // Clear the previous conjunction up front so that if this one fails to load
+  // (e.g. missing GP data) the globe doesn't keep showing the old orbits and
+  // markers over an unrelated point.
+  clearVisualization();
   showInfoLoading(`Fetching GP data for ${event.noradId1} and ${event.noradId2}…`);
   setStatus(`Analyzing ${event.name1} × ${event.name2}…`);
 
@@ -199,7 +238,6 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
     return;
   }
 
-  clearVisualization();
   scene.overlay.add(renderOrbit(details.orbit1, OBJECT1_COLOR));
   scene.overlay.add(renderOrbit(details.orbit2, OBJECT2_COLOR));
   scene.overlay.add(renderTcaMarker(details.position1AtTca.positionEci, OBJECT1_COLOR));
@@ -208,7 +246,13 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
     renderMissDistanceLine(details.position1AtTca.positionEci, details.position2AtTca.positionEci),
   );
 
-  animator = new TimeAnimator(details.orbit1, details.orbit2, details.actualTca, animatorElements);
+  animator = new TimeAnimator(
+    details.orbit1,
+    details.orbit2,
+    details.actualTca,
+    animatorElements,
+    (time) => scene.setSimulatedTime(time),
+  );
   scene.overlay.add(animator.marker1, animator.marker2);
   const active = animator;
   unregisterTick = scene.onFrame((delta) => active.tick(delta));
@@ -233,11 +277,34 @@ async function classifyRegimes(events: ConjunctionEvent[]): Promise<void> {
   await Promise.all(workers);
 }
 
+/** JSON serialization turns each event's tca into a string; rebuild the Date. */
+function reviveEvents(events: ConjunctionEvent[]): ConjunctionEvent[] {
+  return events.map((event) => ({ ...event, tca: new Date(event.tca) }));
+}
+
+/** Populate the sidebar and start regime classification for a set of events. */
+function showLiveEvents(events: ConjunctionEvent[], asOf: Date): void {
+  elementsCache.clear();
+  sidebar.setEvents(events);
+  requireElement('data-as-of').textContent = `Data as of: ${formatTca(asOf)}`;
+  setStatus(`Top ${events.length} conjunctions by miss distance. Click one to visualize.`);
+  void classifyRegimes(events);
+}
+
 async function loadConjunctions(): Promise<void> {
   if (USE_LOCAL_SOCRATES) {
     return loadLocalTestData(false);
   }
   const token = ++loadToken;
+
+  // Serve the list from the persistent cache while it is still fresh, so a
+  // reload within the TTL makes no SOCRATES request (and skips the 16 MB CSV).
+  const cached = readCache<ConjunctionEvent[]>(SOCRATES_CACHE_KEY, SOCRATES_TTL_MS, reviveEvents);
+  if (cached !== null) {
+    showLiveEvents(cached.data, cached.savedAt);
+    return;
+  }
+
   const indicator = requireElement('refresh-indicator');
   indicator.classList.remove('hidden');
   setStatus('Fetching SOCRATES conjunction data…');
@@ -250,11 +317,8 @@ async function loadConjunctions(): Promise<void> {
     if (token !== loadToken) {
       return;
     }
-    elementsCache.clear();
-    sidebar.setEvents(events);
-    requireElement('data-as-of').textContent = `Data as of: ${formatTca(new Date())}`;
-    setStatus(`Top ${events.length} conjunctions by miss distance. Click one to visualize.`);
-    void classifyRegimes(events);
+    writeCache(SOCRATES_CACHE_KEY, events);
+    showLiveEvents(events, new Date());
   } catch (error) {
     if (token !== loadToken) {
       return;
