@@ -217,15 +217,18 @@ export function createEarthScene(container: HTMLElement): EarthScene {
   controls.minDistance = EARTH_RADIUS + 0.4;
   controls.maxDistance = 400;
 
-  // Camera reorientation sweep (see focusOn). The direction is slerped and the
-  // radius lerped so the camera arcs cleanly around the globe. OrbitControls
-  // reads camera.position at the start of each update(), so per-frame writes
-  // here are picked up without a jump.
+  // Selection transition (see focusOn). Over one eased sweep the camera swings
+  // to the conjunction (direction slerped, radius lerped) AND the globe rotates
+  // the short way to the new instant's orientation, so neither the view nor the
+  // geography snaps. OrbitControls reads camera.position at the start of each
+  // update(), so per-frame writes here are picked up without a jump.
   interface FocusTween {
     fromDir: THREE.Vector3;
     rotation: THREE.Quaternion;
     fromRadius: number;
     toRadius: number;
+    /** Signed short-way offset from the target Earth rotation, decayed to 0. */
+    earthOffset: number;
     startMs: number;
     durationMs: number;
   }
@@ -236,6 +239,11 @@ export function createEarthScene(container: HTMLElement): EarthScene {
   });
   const easeInOutCubic = (t: number): number =>
     t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  /** Wrap an angle to (-π, π] so the globe reorients the short way. */
+  const wrapAngle = (a: number): number => {
+    const twoPi = Math.PI * 2;
+    return ((((a + Math.PI) % twoPi) + twoPi) % twoPi) - Math.PI;
+  };
 
   // The Earth itself is shaded by the day/night ShaderMaterial, but keep a
   // sun-tracking directional light (plus faint ambient) for any lit meshes.
@@ -308,8 +316,22 @@ export function createEarthScene(container: HTMLElement): EarthScene {
     // shares one instant: live wall-clock time by default, or whichever
     // moment is being scrubbed in an active conjunction replay.
     const currentTime = simulatedTime ?? new Date();
+
+    // Progress of an in-flight selection sweep; the camera and the globe's
+    // reorientation both ride this single eased value so they move in lock-step.
+    let eased: number | null = null;
+    if (focusTween !== null) {
+      const t = Math.min(1, (performance.now() - focusTween.startMs) / focusTween.durationMs);
+      eased = easeInOutCubic(t);
+    }
+
     sunDirectionScene(currentTime, sunDirection);
     earth.rotation.y = getEarthRotationRadians(currentTime);
+    if (focusTween !== null && eased !== null) {
+      // Ease the globe from its previous orientation to the new instant's,
+      // decaying the short-way offset to zero, rather than snapping.
+      earth.rotation.y += focusTween.earthOffset * (1 - eased);
+    }
     atmosphere.setSunDirection(sunDirection);
     sun.setDirection(sunDirection);
     sunLight.position.copy(sunDirection).multiplyScalar(200);
@@ -318,9 +340,7 @@ export function createEarthScene(container: HTMLElement): EarthScene {
       callback(delta);
     }
 
-    if (focusTween !== null) {
-      const t = Math.min(1, (performance.now() - focusTween.startMs) / focusTween.durationMs);
-      const eased = easeInOutCubic(t);
+    if (focusTween !== null && eased !== null) {
       const step = new THREE.Quaternion().slerpQuaternions(
         new THREE.Quaternion(),
         focusTween.rotation,
@@ -329,7 +349,7 @@ export function createEarthScene(container: HTMLElement): EarthScene {
       const dir = focusTween.fromDir.clone().applyQuaternion(step);
       const radius = focusTween.fromRadius + (focusTween.toRadius - focusTween.fromRadius) * eased;
       camera.position.copy(dir.multiplyScalar(radius));
-      if (t >= 1) {
+      if (eased >= 1) {
         focusTween = null;
       }
     }
@@ -354,6 +374,10 @@ export function createEarthScene(container: HTMLElement): EarthScene {
       }
       toDir.normalize();
       const fromDir = camera.position.clone().normalize();
+      // How far the currently-drawn globe is from the new instant's target
+      // orientation, taken the short way — decayed to 0 over the sweep so the
+      // geography glides into place instead of snapping when the time changes.
+      const targetRotation = getEarthRotationRadians(simulatedTime ?? new Date());
       focusTween = {
         fromDir,
         rotation: new THREE.Quaternion().setFromUnitVectors(fromDir, toDir),
@@ -364,6 +388,7 @@ export function createEarthScene(container: HTMLElement): EarthScene {
           controls.minDistance,
           controls.maxDistance,
         ),
+        earthOffset: wrapAngle(earth.rotation.y - targetRotation),
         startMs: performance.now(),
         durationMs: 700,
       };

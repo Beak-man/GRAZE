@@ -182,7 +182,9 @@ function clearVisualization(): void {
     animator.dispose();
     animator = null;
   }
-  scene.setSimulatedTime(null);
+  // Leave the globe at its current orientation — the next selection eases it to
+  // the new instant (see scene.focusOn). Resetting to live time here would make
+  // the geography flash to "now" during the async GP load before the sweep.
   for (const child of [...scene.overlay.children]) {
     disposeObject(child);
     scene.overlay.remove(child);
