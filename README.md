@@ -57,6 +57,30 @@ No authentication is required for either. Please be considerate of
 CelesTrak's bandwidth — GRAZE caches GP fetches per session and refreshes
 SOCRATES data at most every 8 hours.
 
+## How data retrieval works
+
+GRAZE fetches two things from CelesTrak — the SOCRATES conjunction list and each
+object's GP orbital elements — but *when* and *from where* depends on the mode.
+
+**Development (`npm run dev`)** defaults to the bundled `test-data/` snapshot and
+makes **no** CelesTrak requests, to spare the rate limiter while iterating. Opt
+into live data with `VITE_USE_LIVE=true npm run dev`; requests then go
+same-origin through the Vite proxy (`/SOCRATES`, `/NORAD` → celestrak.org), so
+there are no CORS concerns.
+
+**Production** always uses live CelesTrak, fronted by a `localStorage` cache: the
+conjunction list is cached ~8 h and GP sets ~24 h, so a reload within those
+windows makes no network requests (the `#data-as-of` footer shows when the shown
+data was fetched). Requests hit `https://celestrak.org` directly, or the bundled
+Cloudflare Worker if `VITE_CELESTRAK_BASE` is set — the Worker edge-caches with
+matching 8 h / 24 h TTLs as a backstop for cold clients. If a live load fails,
+the app offers a **"Use local test data"** button that falls back to the bundled
+snapshot.
+
+See **[docs/data-flow.md](docs/data-flow.md)** for the full picture — the caching
+layers, the load/decision flowcharts, every environment flag, and how the bundled
+snapshot is refreshed.
+
 ## Running locally
 
 ```sh
@@ -74,13 +98,8 @@ VITE_USE_LIVE=true npm run dev
 
 The dev server proxies `/SOCRATES` and `/NORAD` to celestrak.org
 (see `packages/conjunction-web/vite.config.ts`), so there are no CORS
-concerns in development.
-
-In production the app persists the conjunction list (~8 h) and GP element
-sets (~24 h) in `localStorage`, so a reload within those windows makes no
-CelesTrak requests. The `#data-as-of` footer shows when the cached data was
-fetched. The bundled Cloudflare Worker edge-caches with matching TTLs as a
-backstop for cold clients.
+concerns in development. (See [How data retrieval works](#how-data-retrieval-works)
+above for the dev-vs-production picture.)
 
 Other commands:
 
@@ -130,8 +149,9 @@ row count or origin with `ROWS=`, `MAX_CANDIDATES=`, `BASE=`.
 ## CORS proxy (Cloudflare Worker)
 
 A ~20-line proxy lives in [`cf-worker/worker.js`](cf-worker/worker.js). It
-forwards only the SOCRATES and GP paths to celestrak.org, caches responses
-at the edge for 30 minutes, and adds `Access-Control-Allow-Origin: *`.
+forwards only the SOCRATES and GP paths to celestrak.org, edge-caches them
+with the same TTLs as the client (8 h for SOCRATES, 24 h for GP), and adds
+`Access-Control-Allow-Origin: *`.
 
 ```sh
 cd cf-worker
