@@ -9,7 +9,7 @@
       "PowerShell(Copy-Item test-data/socrates-sample.csv packages/conjunction-web/public/test-data/socrates-sample.csv)",
       "PowerShell($rows = Import-Csv test-data/socrates-sample.csv | Select-Object -First 10; $ids = @\\($rows.NORAD_CAT_ID_1\\) + @\\($rows.NORAD_CAT_ID_2\\) | Sort-Object -Unique; \"IDs needed \\($\\($ids.Count\\)\\): $\\($ids -join ', '\\)\"; try { $r = Invoke-WebRequest -Uri \"https://celestrak.org/NORAD/elements/gp.php?CATNR=$\\($ids[0]\\)&FORMAT=JSON\" -UseBasicParsing -TimeoutSec 20; \"probe $\\($ids[0]\\): HTTP $\\($r.StatusCode\\), $\\($r.Content.Substring\\(0, [Math]::Min\\(80, $r.Content.Length\\)\\)\\)\" } catch { \"probe failed: $\\($_.Exception.Message\\)\" })",
       "PowerShell(try { $r = Invoke-WebRequest -Uri 'https://tle.ivanstanojevic.me/api/tle/55107' -UseBasicParsing -TimeoutSec 20; \"HTTP $\\($r.StatusCode\\)\"; $r.Content } catch { \"failed: $\\($_.Exception.Message\\)\" })",
-      "PowerShell(npm run fetch:test-gp)"
+      "PowerShell(npm run refresh:test-data)"
     ]
   }
 }

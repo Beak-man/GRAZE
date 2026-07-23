@@ -48,7 +48,7 @@ const SOCRATES_CACHE_KEY = `socrates:${TOP_CONJUNCTIONS}:MINRANGE`;
 const gpCacheKey = (noradId: number): string => `gp:${noradId}`;
 /** Bundled SOCRATES snapshot for when CelesTrak is unreachable. */
 const LOCAL_TEST_DATA_URL = '/test-data/socrates-sample.csv';
-/** Bundled GP element sets ({noradId}.json), refreshed via npm run fetch:test-gp. */
+/** Bundled GP element sets ({noradId}.json), refreshed via npm run refresh:test-data. */
 const LOCAL_GP_BASE_URL = '/test-data/gp';
 
 function envFlag(value: unknown): boolean {
@@ -118,7 +118,7 @@ const elementsCache = new Map<number, Promise<OrbitalElements>>();
 async function fetchLocalElements(noradId: number): Promise<OrbitalElements> {
   const missingMessage =
     `No bundled GP data for NORAD ${noradId}. This object is in the test snapshot ` +
-    'but has no test-data/gp file — run "npm run fetch:test-gp", or use live data ' +
+    'but has no test-data/gp file — run "npm run refresh:test-data", or use live data ' +
     'with VITE_USE_LIVE=true.';
   const response = await fetch(`${LOCAL_GP_BASE_URL}/${noradId}.json`);
   if (!response.ok) {

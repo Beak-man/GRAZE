@@ -13,7 +13,7 @@
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces --if-present",
     "dev": "npm run dev --workspace conjunction-web",
-    "fetch:test-gp": "node scripts/fetch-test-gp.mjs"
+    "refresh:test-data": "node scripts/refresh-test-data.mjs"
   },
   "engines": {
     "node": ">=20"

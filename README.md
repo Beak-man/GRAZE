@@ -118,9 +118,14 @@ There are three ways to use them:
 - `VITE_USE_LOCAL_GP=true npm run dev` — always read element sets from
   `test-data/gp/{noradId}.json`.
 
-Refresh the bundled GP files with `npm run fetch:test-gp` (tries CelesTrak
-first, falls back to a public TLE mirror; resumable, so rerun it if some
-objects fail while rate-limited).
+Refresh the whole bundled snapshot — the conjunction list *and* the matching
+GP element sets — in one step with `npm run refresh:test-data`. It pulls the
+current SOCRATES list, keeps the top rows whose both objects have fetchable GP
+(CelesTrak first, falling back to a public TLE mirror), rewrites both
+`socrates-sample.csv` copies plus `test-data/gp/`, and prunes GP files the new
+list no longer references. If CelesTrak is rate-limiting and it can't cover a
+full snapshot, it leaves the existing files untouched — just rerun. Override the
+row count or origin with `ROWS=`, `MAX_CANDIDATES=`, `BASE=`.
 
 ## CORS proxy (Cloudflare Worker)
 
