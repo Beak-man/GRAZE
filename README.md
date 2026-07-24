@@ -94,11 +94,13 @@ See **[docs/data-flow.md](docs/data-flow.md)** for the full picture — the cach
 layers, the load/decision flowcharts, every environment flag, and how the bundled
 snapshot is refreshed.
 
-## Running locally
+## Running it
+
+### Development
 
 ```sh
 npm install
-npm run dev      # starts the Vite dev server at http://localhost:5173
+npm run dev      # Vite dev server with hot reload at http://localhost:5173
 ```
 
 To spare CelesTrak's rate limiter, **`npm run dev` uses the bundled
@@ -111,30 +113,93 @@ VITE_USE_LIVE=true npm run dev
 
 The dev server proxies `/SOCRATES` and `/NORAD` to celestrak.org
 (see `packages/conjunction-web/vite.config.ts`), so there are no CORS
-concerns in development. (See [How data retrieval works](#how-data-retrieval-works)
-above for the dev-vs-production picture.)
+concerns in development.
 
-Other commands:
+### Production build & preview
 
 ```sh
-npm run build    # builds both packages; static site in packages/conjunction-web/dist
-npm test         # vitest unit tests across all packages
+npm run build    # builds both packages; static site → packages/conjunction-web/dist
+npm run preview -w conjunction-web   # serve that build locally to try the production bundle
+```
+
+`dist/` is a self-contained static site — see [Deploying](#deploying) to host it.
+
+### Development vs production
+
+| | Development (`npm run dev`) | Production (built `dist/`) |
+| --- | --- | --- |
+| Served by | Vite dev server (hot reload) | any static host / web server |
+| Data source (default) | bundled `test-data/` snapshot — no network | live CelesTrak |
+| CelesTrak requests | none by default (`VITE_USE_LIVE=true` to opt in) | on load / every ~8 h |
+| Caching | none (always fresh from disk) | `localStorage` — list ~8 h, GP ~24 h |
+| CORS | none — same-origin Vite proxy | direct to celestrak.org, or a proxy (`VITE_CELESTRAK_BASE`) |
+| Hot reload | yes | n/a |
+
+For *why* and the full caching story, see
+[How data retrieval works](#how-data-retrieval-works) and
+[docs/data-flow.md](docs/data-flow.md).
+
+### Other commands
+
+```sh
+npm test                       # vitest unit tests across all packages
+npm run refresh:test-data      # regenerate the bundled dev snapshot (list + GP)
 npm run verify:propagation -w conjunction-core   # live ISS ground-track sanity check
 ```
 
-## Deploying to Cloudflare Pages
+## Deploying
+
+`npm run build` emits a **fully static site** to
+`packages/conjunction-web/dist/` — `index.html`, hashed `assets/`, the
+`textures/`, and the bundled `test-data/`. There is no server-side code and no
+client-side routing, so it hosts on **any static server with no rewrite or
+SPA-fallback config** — just serve the directory.
+
+**Serve it anywhere:**
+
+- **Your own web server (nginx, Apache, …):** point the document root at
+  `dist/`. That's the whole requirement. For nginx, optionally add long-lived
+  caching for the immutable assets:
+
+  ```nginx
+  root /var/www/graze/dist;
+  location ~* ^/(assets|textures)/ {
+      add_header Cache-Control "public, max-age=31536000, immutable";
+  }
+  ```
+
+- **Managed static hosts (Netlify, Vercel, GitHub Pages, S3 + CloudFront,
+  Cloudflare Pages, …):** build command `npm run build`, output directory
+  `packages/conjunction-web/dist`.
+
+**Cache headers.** `public/_headers` sets 1-year immutable caching for
+`/textures/*` and `/assets/*` on hosts that read a `_headers` file (Cloudflare
+Pages, Netlify). On other servers set the equivalent `Cache-Control` (as in the
+nginx snippet above). This is a performance nicety, not a requirement.
+
+**Subpath hosting.** Root hosting needs nothing. To serve from a subpath (e.g.
+`you.github.io/graze/`), set Vite's `base` so asset URLs resolve — either
+`base: '/graze/'` in `packages/conjunction-web/vite.config.ts` or
+`vite build --base=/graze/`.
+
+**Data in production.** The app fetches live `https://celestrak.org` directly.
+If the browser is blocked by CORS, bake in a proxy at build time with
+`VITE_CELESTRAK_BASE=<proxy-url>` — the bundled [Cloudflare Worker](#cors-proxy-cloudflare-worker)
+is one option, but *any* reverse proxy that forwards `/SOCRATES` and `/NORAD`
+and adds an `Access-Control-Allow-Origin` header works. The bundled `test-data/`
+also ships in `dist/`, so the "Use local test data" fallback works in production
+too.
+
+### Example: Cloudflare Pages
 
 1. Push this repository to GitHub and connect it in the Cloudflare Pages
    dashboard (*Workers & Pages → Create → Pages → Connect to Git*).
 2. Configure the build:
    - **Build command:** `npm run build`
    - **Build output directory:** `packages/conjunction-web/dist`
-3. Deploy. The Blue Marble texture and other assets are copied into `dist/`
-   automatically, and `public/_headers` ships long-lived cache headers for
-   the texture and hashed assets.
-
-In production the app calls `https://celestrak.org` directly. If CelesTrak's
-CORS policy blocks those requests, set up the proxy below.
+3. Deploy. Assets are copied into `dist/` automatically, and `public/_headers`
+   applies the long-lived cache headers. If you also need the CORS proxy, deploy
+   the Worker below and set `VITE_CELESTRAK_BASE`.
 
 ## Working offline / when CelesTrak is down
 
@@ -161,8 +226,11 @@ row count or origin with `ROWS=`, `MAX_CANDIDATES=`, `BASE=`.
 
 ## CORS proxy (Cloudflare Worker)
 
-A ~20-line proxy lives in [`cf-worker/worker.js`](cf-worker/worker.js). It
-forwards only the SOCRATES and GP paths to celestrak.org, edge-caches them
+Only needed if the browser is CORS-blocked calling CelesTrak directly, and it
+needn't be a Worker — any reverse proxy that forwards `/SOCRATES` and `/NORAD`
+and adds an `Access-Control-Allow-Origin` header will do. The bundled
+implementation is a ~20-line proxy in [`cf-worker/worker.js`](cf-worker/worker.js):
+it forwards only the SOCRATES and GP paths to celestrak.org, edge-caches them
 with the same TTLs as the client (8 h for SOCRATES, 24 h for GP), and adds
 `Access-Control-Allow-Origin: *`.
 
