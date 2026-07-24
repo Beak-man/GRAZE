@@ -46,6 +46,19 @@ Objects with IDs ≥ 100000 exist only in OMM/JSON format and cannot be
 represented as TLEs. GRAZE therefore uses `FORMAT=JSON` GP queries and
 `satellite.json2satrec()` exclusively — no TLE parsing anywhere.
 
+## Documentation
+
+- [docs/coordinate-frames.md](docs/coordinate-frames.md) — the spatial/rendering
+  model: ECI ↔ scene mapping, GMST Earth rotation, the frame invariant, camera
+  transitions, and the shaders.
+- [docs/methodology.md](docs/methodology.md) — how conjunctions are computed
+  (SGP4, the close-approach search) and what miss distance / Pc / DSE mean.
+- [docs/data-flow.md](docs/data-flow.md) — data sources, caching layers, and
+  dev-vs-production retrieval.
+- [docs/troubleshooting.md](docs/troubleshooting.md) — blank canvas, CelesTrak
+  errors, CORS, stale cache, and more.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — layout, commands, and the hard constraints.
+
 ## Data sources
 
 - **Conjunction events:** [CelesTrak SOCRATES](https://celestrak.org/SOCRATES/)
