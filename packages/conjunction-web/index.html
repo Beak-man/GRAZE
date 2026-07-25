@@ -52,6 +52,7 @@
         min-height: 0;
       }
       #sidebar header {
+        position: relative;
         padding: 12px 14px 8px;
         border-bottom: 1px solid var(--border);
       }
@@ -59,6 +60,30 @@
       #sidebar h1 span { color: var(--accent1); }
       #sidebar h1 .tip-icon { margin-left: 6px; vertical-align: middle; letter-spacing: normal; }
       .meta { color: var(--muted); }
+
+      /* ---------- Language toggle ---------- */
+      #lang-toggle {
+        position: absolute;
+        top: 12px;
+        right: 14px;
+        display: inline-flex;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      #lang-toggle button {
+        appearance: none;
+        border: none;
+        background: var(--panel-2);
+        color: var(--muted);
+        font: 11px var(--mono);
+        letter-spacing: 1px;
+        padding: 3px 8px;
+        cursor: pointer;
+      }
+      #lang-toggle button + button { border-left: 1px solid var(--border); }
+      #lang-toggle button:hover { color: var(--text); }
+      #lang-toggle button.active { background: var(--accent1); color: #0b0e14; }
 
       #status {
         padding: 6px 14px;
@@ -77,7 +102,7 @@
         gap: 4px;
       }
       .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-      .filter-label { color: var(--muted); width: 52px; flex: none; }
+      .filter-label { color: var(--muted); width: 64px; flex: none; }
       .filter-row label {
         display: inline-flex;
         align-items: center;
@@ -316,35 +341,39 @@
     <div id="app">
       <aside id="sidebar">
         <header>
-          <h1 title="General Rendezvous Assessment and Zone Evaluator">GR<span>A</span>ZE<button type="button" class="tip-icon" aria-label="About GRAZE" data-tip="GRAZE (General Rendezvous Assessment and Zone Evaluator) — a 3D visualizer for upcoming satellite conjunctions from CelesTrak SOCRATES data. This is an early beta; see the disclaimer above. Source, issues, and license are on GitHub (linked in the footer).">i</button></h1>
+          <div id="lang-toggle" role="group" aria-label="Language">
+            <button type="button" data-lang="en">EN</button>
+            <button type="button" data-lang="es">ES</button>
+          </div>
+          <h1 title="General Rendezvous Assessment and Zone Evaluator">GR<span>A</span>ZE<button type="button" id="about-graze" class="tip-icon" aria-label="About GRAZE" data-tip="GRAZE (General Rendezvous Assessment and Zone Evaluator) — a 3D visualizer for upcoming satellite conjunctions from CelesTrak SOCRATES data. This is an early beta; see the disclaimer above. Source, issues, and license are on GitHub (linked in the footer).">i</button></h1>
           <div class="meta">General Rendezvous Assessment and Zone Evaluator</div>
         </header>
         <div id="status">Loading…</div>
         <div id="filters">
           <div class="filter-row" id="regime-filters">
-            <span class="filter-label">Regime</span>
-            <button type="button" class="tip-icon" aria-label="About Regime" data-tip="Orbit regime — LEO (Low Earth Orbit, &lt;2,000 km altitude), MEO (Medium Earth Orbit), GEO (Geostationary Orbit, ~35,786 km), HEO (Highly Elliptical Orbit).">i</button>
+            <span class="filter-label" id="lbl-regime">Regime</span>
+            <button type="button" id="tip-regime" class="tip-icon" aria-label="About Regime" data-tip="Orbit regime — LEO (Low Earth Orbit, &lt;2,000 km altitude), MEO (Medium Earth Orbit), GEO (Geostationary Orbit, ~35,786 km), HEO (Highly Elliptical Orbit).">i</button>
             <label><input type="checkbox" data-regime="LEO" checked />LEO</label>
             <label><input type="checkbox" data-regime="MEO" checked />MEO</label>
             <label><input type="checkbox" data-regime="GEO" checked />GEO</label>
             <label><input type="checkbox" data-regime="HEO" checked />HEO</label>
           </div>
           <div class="filter-row" id="type-filters">
-            <span class="filter-label">Type</span>
-            <button type="button" class="tip-icon" aria-label="About Type" data-tip="Object type — Payload (active or inactive satellite), Debris (fragmentation or mission-related debris), R/B (spent rocket body).">i</button>
-            <label><input type="checkbox" data-type="payload" checked />Payload</label>
-            <label><input type="checkbox" data-type="debris" checked />Debris</label>
-            <label><input type="checkbox" data-type="rocket-body" checked />R/B</label>
+            <span class="filter-label" id="lbl-type">Type</span>
+            <button type="button" id="tip-type" class="tip-icon" aria-label="About Type" data-tip="Object type — Payload (active or inactive satellite), Debris (fragmentation or mission-related debris), R/B (spent rocket body).">i</button>
+            <label><input type="checkbox" data-type="payload" checked /><span id="lbl-payload">Payload</span></label>
+            <label><input type="checkbox" data-type="debris" checked /><span id="lbl-debris">Debris</span></label>
+            <label><input type="checkbox" data-type="rocket-body" checked /><span id="lbl-rocket-body">R/B</span></label>
           </div>
           <div class="filter-row">
-            <span class="filter-label">Miss ≤</span>
-            <button type="button" class="tip-icon" aria-label="About miss distance" data-tip="Miss distance — predicted closest separation between the two objects at TCA (time of closest approach), in kilometers.">i</button>
+            <span class="filter-label" id="lbl-miss">Miss ≤</span>
+            <button type="button" id="tip-miss" class="tip-icon" aria-label="About miss distance" data-tip="Miss distance — predicted closest separation between the two objects at TCA (time of closest approach), in kilometers.">i</button>
             <input type="range" id="miss-max" min="0" max="5" step="0.1" value="5" />
             <span id="miss-max-value">5.0 km</span>
           </div>
           <div class="filter-row">
-            <span class="filter-label">Pc</span>
-            <button type="button" class="tip-icon" aria-label="About probability of collision" data-tip="Probability of collision (Pc) — estimated chance the two objects collide, based on position uncertainty. Higher = greater risk.">i</button>
+            <span class="filter-label" id="lbl-pc">Pc</span>
+            <button type="button" id="tip-pc" class="tip-icon" aria-label="About probability of collision" data-tip="Probability of collision (Pc) — estimated chance the two objects collide, based on position uncertainty. Higher = greater risk.">i</button>
             <select id="prob-threshold">
               <option value="all" selected>show all</option>
               <option value="1e-7">&gt; 1e-7</option>
@@ -370,9 +399,9 @@
       </aside>
       <main id="viewport">
         <div id="hud" class="hidden">
-          <div><span class="label">UTC   </span><span id="hud-time">—</span></div>
-          <div><span class="label">RANGE </span><span id="hud-distance">—</span></div>
-          <div><span class="label">TCA   </span><span id="hud-countdown">—</span></div>
+          <div><span class="label" id="hud-label-utc">UTC   </span><span id="hud-time">—</span></div>
+          <div><span class="label" id="hud-label-range">RANGE </span><span id="hud-distance">—</span></div>
+          <div><span class="label" id="hud-label-tca">TCA   </span><span id="hud-countdown">—</span></div>
         </div>
         <div id="time-controls" class="hidden">
           <button id="play-pause" title="Play/Pause">⏸</button>

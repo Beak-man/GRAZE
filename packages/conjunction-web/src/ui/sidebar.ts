@@ -2,7 +2,7 @@ import type { ConjunctionEvent, ObjectType, OrbitRegime } from 'conjunction-core
 import { formatProbability, formatRange, formatTca } from '../format.js';
 import { eventPassesFilters } from './filters.js';
 import type { ConjunctionFilters } from './filters.js';
-import { MISS_TIP, PC_TIP, TCA_TIP } from './tooltipText.js';
+import { onLanguageChange, t } from '../i18n/translator.js';
 
 export type SortKey = 'minRange' | 'maxProbability';
 
@@ -47,12 +47,21 @@ export class Sidebar {
   private sortKey: SortKey = 'minRange';
   private sortAscending = true;
   private selectedKey: string | null = null;
+  /** True while a load-failure message replaces the table (see showMessage). */
+  private messageActive = false;
 
   constructor(private readonly onSelect: (event: ConjunctionEvent) => void) {
     this.table = requireElement<HTMLTableElement>('conjunctions');
     this.container = requireElement('table-container');
     this.filterCount = requireElement('filter-count');
     this.bindFilterControls();
+    // Re-render the table (headers, filter count) on a language switch, unless
+    // a message is showing — re-rendering would wipe it and expose an empty table.
+    onLanguageChange(() => {
+      if (!this.messageActive) {
+        this.render();
+      }
+    });
   }
 
   /** Replace the event list (initial load or 8-hour refresh). */
@@ -75,6 +84,7 @@ export class Sidebar {
 
   /** Replace the table with a message (load failure) and optional actions. */
   showMessage(message: string, actions: TableMessageAction[] = []): void {
+    this.messageActive = true;
     const box = document.createElement('div');
     box.className = 'table-message';
     box.textContent = message;
@@ -140,22 +150,25 @@ export class Sidebar {
   }
 
   private render(): void {
+    this.messageActive = false;
     this.container.querySelector('.table-message')?.remove();
     const visible = this.filteredEvents();
-    this.filterCount.textContent = `${visible.length} / ${this.events.length} shown`;
+    this.filterCount.textContent = t().filters.shown(visible.length, this.events.length);
     this.table.replaceChildren(this.buildHead(), this.buildBody(visible));
     this.applySelection();
   }
 
   private buildHead(): HTMLTableSectionElement {
+    const table = t().table;
+    const tips = t().tooltips;
     const head = document.createElement('thead');
     const row = document.createElement('tr');
     row.append(
-      this.buildHeaderCell('Object 1'),
-      this.buildHeaderCell('Object 2'),
-      this.buildHeaderCell('TCA (UTC)', undefined, TCA_TIP),
-      this.buildHeaderCell('Miss', 'minRange', MISS_TIP),
-      this.buildHeaderCell('Max Pc', 'maxProbability', PC_TIP),
+      this.buildHeaderCell(table.object1),
+      this.buildHeaderCell(table.object2),
+      this.buildHeaderCell(table.tca, undefined, tips.tca),
+      this.buildHeaderCell(table.miss, 'minRange', tips.miss),
+      this.buildHeaderCell(table.maxPc, 'maxProbability', tips.pc),
     );
     head.append(row);
     return head;

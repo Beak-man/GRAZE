@@ -23,6 +23,8 @@ import { Sidebar } from './ui/sidebar.js';
 import { showInfoDetails, showInfoError, showInfoLoading, showInfoPlaceholder } from './ui/infoPanel.js';
 import { initTooltips } from './ui/tooltip.js';
 import { readCache, writeCache } from './cache.js';
+import { initI18n } from './i18n/localize.js';
+import { onLanguageChange, t } from './i18n/translator.js';
 import { formatTca } from './format.js';
 
 // In dev, same-origin requests go through the Vite proxy (vite.config.ts).
@@ -64,11 +66,6 @@ const DEV_DEFAULT_LOCAL = import.meta.env.DEV && !envFlag(import.meta.env.VITE_U
 const USE_LOCAL_SOCRATES = envFlag(import.meta.env.VITE_USE_LOCAL_SOCRATES) || DEV_DEFAULT_LOCAL;
 let useLocalGp = envFlag(import.meta.env.VITE_USE_LOCAL_GP) || DEV_DEFAULT_LOCAL;
 
-const CORS_HELP =
-  'If this keeps happening, the browser is likely blocked by CORS or a network ' +
-  'failure when calling CelesTrak directly. Deploy the bundled Cloudflare Worker ' +
-  'proxy (cf-worker/) and rebuild with VITE_CELESTRAK_BASE set to its URL — see README.md.';
-
 function requireElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
   if (element === null) {
@@ -77,9 +74,20 @@ function requireElement<T extends HTMLElement>(id: string): T {
   return element as T;
 }
 
+// Status line and the "data as of" footer are set through thunks so a language
+// switch can re-render the last message in the new language (see the
+// onLanguageChange wiring at startup).
 const statusElement = requireElement('status');
-function setStatus(text: string): void {
-  statusElement.textContent = text;
+let lastStatusRender: (() => string) | null = null;
+function setStatus(render: () => string): void {
+  lastStatusRender = render;
+  statusElement.textContent = render();
+}
+
+let lastDataAsOfRender: (() => string) | null = null;
+function setDataAsOf(render: () => string): void {
+  lastDataAsOfRender = render;
+  requireElement('data-as-of').textContent = render();
 }
 
 /** fetch() rejects with a TypeError on network and CORS failures. */
@@ -116,10 +124,7 @@ const elementsCache = new Map<number, Promise<OrbitalElements>>();
 
 /** Load a bundled element set; fails clearly for objects not in test-data/gp. */
 async function fetchLocalElements(noradId: number): Promise<OrbitalElements> {
-  const missingMessage =
-    `No bundled GP data for NORAD ${noradId}. This object is in the test snapshot ` +
-    'but has no test-data/gp file — run "npm run refresh:test-data", or use live data ' +
-    'with VITE_USE_LIVE=true.';
+  const missingMessage = t().errors.noBundledGp(noradId);
   const response = await fetch(`${LOCAL_GP_BASE_URL}/${noradId}.json`);
   if (!response.ok) {
     throw new Error(`${missingMessage} (HTTP ${response.status})`);
@@ -197,8 +202,8 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
   // (e.g. missing GP data) the globe doesn't keep showing the old orbits and
   // markers over an unrelated point.
   clearVisualization();
-  showInfoLoading(`Fetching GP data for ${event.noradId1} and ${event.noradId2}…`);
-  setStatus(`Analyzing ${event.name1} × ${event.name2}…`);
+  showInfoLoading(() => t().infoPanel.fetchingGp(event.noradId1, event.noradId2));
+  setStatus(() => t().status.analyzing(event.name1, event.name2));
 
   let elements1: OrbitalElements;
   let elements2: OrbitalElements;
@@ -211,10 +216,12 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
     if (token !== selectionToken) {
       return;
     }
-    setStatus('GP data unavailable.');
+    setStatus(() => t().status.gpUnavailable);
+    const withCors = isNetworkOrCorsError(error);
+    const detail = errorMessage(error);
     showInfoError(
-      `Could not fetch orbital elements for this conjunction: ${errorMessage(error)}` +
-        (isNetworkOrCorsError(error) ? ` ${CORS_HELP}` : ''),
+      () =>
+        t().errors.couldNotFetchElements(detail) + (withCors ? ` ${t().errors.corsHelp}` : ''),
     );
     return;
   }
@@ -222,7 +229,7 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
     return; // A newer selection superseded this one.
   }
 
-  showInfoLoading('Propagating ±30 min around TCA…');
+  showInfoLoading(() => t().infoPanel.propagating);
   let details;
   try {
     details = computeCloseApproach(elements1, elements2, event.tca);
@@ -230,11 +237,9 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
     if (token !== selectionToken) {
       return;
     }
-    setStatus('Propagation failed.');
-    showInfoError(
-      `⚠ Propagation failed for this conjunction (element set may be stale or the ` +
-        `object decayed): ${errorMessage(error)} Visualization skipped.`,
-    );
+    setStatus(() => t().status.propagationFailed);
+    const detail = errorMessage(error);
+    showInfoError(() => t().errors.propagationFailedDetail(detail));
     return;
   }
   if (token !== selectionToken) {
@@ -272,7 +277,7 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
   );
 
   showInfoDetails(event, details, summarizeOrbit(elements1), summarizeOrbit(elements2));
-  setStatus(`Showing ${event.name1} × ${event.name2}`);
+  setStatus(() => t().status.showing(event.name1, event.name2));
 }
 
 /** Classify orbit regimes for all listed objects, a few fetches at a time. */
@@ -300,8 +305,8 @@ function reviveEvents(events: ConjunctionEvent[]): ConjunctionEvent[] {
 function showLiveEvents(events: ConjunctionEvent[], asOf: Date): void {
   elementsCache.clear();
   sidebar.setEvents(events);
-  requireElement('data-as-of').textContent = `Data as of: ${formatTca(asOf)}`;
-  setStatus(`Top ${events.length} conjunctions by miss distance. Click one to visualize.`);
+  setDataAsOf(() => t().status.dataAsOf(formatTca(asOf)));
+  setStatus(() => t().status.topConjunctions(events.length));
   void classifyRegimes(events);
 }
 
@@ -321,7 +326,7 @@ async function loadConjunctions(): Promise<void> {
 
   const indicator = requireElement('refresh-indicator');
   indicator.classList.remove('hidden');
-  setStatus('Fetching SOCRATES conjunction data…');
+  setStatus(() => t().status.fetchingSocrates);
   try {
     const events = await fetchConjunctions({
       maxResults: TOP_CONJUNCTIONS,
@@ -337,15 +342,12 @@ async function loadConjunctions(): Promise<void> {
     if (token !== loadToken) {
       return;
     }
-    setStatus('Could not load conjunction data.');
-    sidebar.showMessage(
-      `Could not reach CelesTrak SOCRATES: ${errorMessage(error)}` +
-        (isNetworkOrCorsError(error) ? ` ${CORS_HELP}` : ''),
-      [
-        { label: 'Retry', onAction: () => void loadConjunctions() },
-        { label: 'Use local test data', onAction: () => void loadLocalTestData(true) },
-      ],
-    );
+    setStatus(() => t().status.couldNotLoad);
+    const corsSuffix = isNetworkOrCorsError(error) ? ` ${t().errors.corsHelp}` : '';
+    sidebar.showMessage(t().errors.couldNotReachSocrates(errorMessage(error)) + corsSuffix, [
+      { label: t().buttons.retry, onAction: () => void loadConjunctions() },
+      { label: t().buttons.useLocalData, onAction: () => void loadLocalTestData(true) },
+    ]);
   } finally {
     if (token === loadToken) {
       indicator.classList.add('hidden');
@@ -366,7 +368,7 @@ async function loadLocalTestData(switchGpToLocal: boolean): Promise<void> {
     useLocalGp = true;
     elementsCache.clear();
   }
-  setStatus('Loading bundled test data…');
+  setStatus(() => t().status.loadingLocal);
   try {
     const response = await fetch(LOCAL_TEST_DATA_URL);
     if (!response.ok) {
@@ -377,25 +379,34 @@ async function loadLocalTestData(switchGpToLocal: boolean): Promise<void> {
       return;
     }
     sidebar.setEvents(events);
-    requireElement('data-as-of').textContent =
-      'Data as of: bundled test snapshot (not live)';
-    setStatus(
-      `${events.length} conjunctions from local test data` +
-        `${useLocalGp ? ' (orbits from bundled GP files)' : ''}. Click one to visualize.`,
-    );
+    setDataAsOf(() => t().status.dataAsOfLocal);
+    const withGp = useLocalGp;
+    setStatus(() => t().status.localConjunctions(events.length, withGp));
     void classifyRegimes(events);
   } catch (error) {
     if (token !== loadToken) {
       return;
     }
-    setStatus('Could not load local test data.');
-    sidebar.showMessage(`Could not load the bundled test data: ${errorMessage(error)}`, [
-      { label: 'Retry live data', onAction: () => void loadConjunctions() },
-      { label: 'Retry local test data', onAction: () => void loadLocalTestData(switchGpToLocal) },
+    setStatus(() => t().status.couldNotLoadLocal);
+    sidebar.showMessage(t().errors.couldNotLoadLocalData(errorMessage(error)), [
+      { label: t().buttons.retryLiveData, onAction: () => void loadConjunctions() },
+      { label: t().buttons.retryLocalData, onAction: () => void loadLocalTestData(switchGpToLocal) },
     ]);
   }
 }
 
-showInfoPlaceholder('Select a conjunction to analyze it.');
+// Localize the static chrome, then keep the status line and footer in sync on
+// language changes. (Sidebar and info panel subscribe to their own updates.)
+initI18n();
+onLanguageChange(() => {
+  if (lastStatusRender !== null) {
+    statusElement.textContent = lastStatusRender();
+  }
+  if (lastDataAsOfRender !== null) {
+    requireElement('data-as-of').textContent = lastDataAsOfRender();
+  }
+});
+
+showInfoPlaceholder(() => t().infoPanel.placeholder);
 void loadConjunctions();
 setInterval(() => void loadConjunctions(), REFRESH_INTERVAL_MS);
