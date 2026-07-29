@@ -13,6 +13,7 @@ export {
   propagateOrbit,
   computeCloseApproach,
   eciToThreeJs,
+  parabolicVertex,
   subSatellitePoint,
 } from './propagator.js';
 export type { SubSatellitePoint } from './propagator.js';

@@ -136,9 +136,78 @@ function buildSampleTimes(tca: Date, windowMinutes: number): number[] {
 }
 
 /**
+ * Insert a sample into an already time-sorted trajectory, keeping it sorted.
+ * The refined TCA point falls between two existing samples by construction.
+ */
+function insertByTimestamp(orbit: PropagatedPosition[], point: PropagatedPosition): void {
+  const t = point.timestamp.getTime();
+  let low = 0;
+  let high = orbit.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if ((orbit[mid]?.timestamp.getTime() ?? 0) <= t) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  orbit.splice(low, 0, point);
+}
+
+/**
+ * Vertex of the parabola through three points, or null when they do not
+ * describe a minimum.
+ *
+ * Used on SQUARED distances, not distances. Near a close approach the relative
+ * motion is locally linear, so
+ *     d(t)² = d_min² + |v_rel|² (t - t*)²
+ * is exactly a parabola in t, while d(t) itself is a hyperbola. Fitting d²
+ * therefore recovers t* exactly for linear relative motion instead of
+ * approximately.
+ *
+ * The general (unequal-spacing) form is used because the sample grid changes
+ * step size at the fine/coarse boundary, so the minimum can land next to
+ * neighbours that are not equally spaced.
+ *
+ * Returns null when the fit is not a strict minimum (a >= 0 means flat or
+ * concave — a co-orbital pair with a nearly constant separation lands here),
+ * leaving the caller to keep the coarse sample.
+ */
+export function parabolicVertex(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): number | null {
+  // Shift to the middle sample before squaring: absolute epoch milliseconds are
+  // ~1.8e12, and squaring those loses most of the mantissa to cancellation.
+  const a0 = x0 - x1;
+  const a2 = x2 - x1;
+  const denominator = a0 * a2 * (a0 - a2);
+  if (denominator === 0 || !Number.isFinite(denominator)) {
+    return null;
+  }
+  // Quadratic coefficients of y = A·u² + B·u + y1, with u = x - x1.
+  const A = (a2 * (y0 - y1) - a0 * (y2 - y1)) / denominator;
+  const B = (a0 * a0 * (y2 - y1) - a2 * a2 * (y0 - y1)) / denominator;
+  if (!Number.isFinite(A) || !Number.isFinite(B) || A <= 0) {
+    return null; // not a strict minimum
+  }
+  const vertex = x1 - B / (2 * A);
+  return Number.isFinite(vertex) ? vertex : null;
+}
+
+/**
  * Refine a predicted conjunction: propagate both objects across
  * ±windowMinutes (default 30) around the predicted TCA and locate the actual
  * minimum-separation point.
+ *
+ * The coarse sweep alone reports the best *grid sample*, which biases the miss
+ * distance high by up to half a step of relative motion — at a 1 s fine step
+ * and ~15 km/s LEO closing speed that is ~7.5 km. A parabolic sub-sample
+ * refinement follows the sweep and re-propagates at the recovered instant.
  */
 export function computeCloseApproach(
   elements1: OrbitalElements,
@@ -154,7 +223,10 @@ export function computeCloseApproach(
 
   const orbit1: PropagatedPosition[] = [];
   const orbit2: PropagatedPosition[] = [];
-  let best: { range: number; point1: PropagatedPosition; point2: PropagatedPosition } | null = null;
+  /** Every sample where BOTH objects propagated, in time order. */
+  const paired: { timeMs: number; range: number; point1: PropagatedPosition; point2: PropagatedPosition }[] =
+    [];
+  let bestIndex = -1;
 
   for (const timeMs of buildSampleTimes(tca, windowMinutes)) {
     const time = new Date(timeMs);
@@ -168,16 +240,62 @@ export function computeCloseApproach(
     }
     if (point1 !== null && point2 !== null) {
       const range = eciDistance(point1.positionEci, point2.positionEci);
-      if (best === null || range < best.range) {
-        best = { range, point1, point2 };
+      if (bestIndex === -1 || range < (paired[bestIndex]?.range ?? Infinity)) {
+        bestIndex = paired.length;
       }
+      paired.push({ timeMs, range, point1, point2 });
     }
   }
 
-  if (best === null) {
+  const coarse = bestIndex === -1 ? null : paired[bestIndex];
+  if (coarse === undefined || coarse === null) {
     throw new Error(
       `Propagation failed for NORAD ${elements1.NORAD_CAT_ID} / ${elements2.NORAD_CAT_ID} across the entire window around ${tca.toISOString()}`,
     );
+  }
+
+  let best: { range: number; point1: PropagatedPosition; point2: PropagatedPosition } = coarse;
+
+  /*
+   * Sub-sample refinement. The coarse minimum is bracketed by its immediate
+   * neighbours; fitting a parabola to the three SQUARED distances gives the
+   * vertex time analytically. Skipped at the window edges (no bracket) and when
+   * the fit is not a strict minimum.
+   */
+  const before = paired[bestIndex - 1];
+  const after = paired[bestIndex + 1];
+  if (before !== undefined && after !== undefined) {
+    const vertexMs = parabolicVertex(
+      before.timeMs,
+      before.range * before.range,
+      coarse.timeMs,
+      coarse.range * coarse.range,
+      after.timeMs,
+      after.range * after.range,
+    );
+    if (vertexMs !== null && vertexMs > before.timeMs && vertexMs < after.timeMs) {
+      /*
+       * Date has millisecond granularity, so this is where refinement bottoms
+       * out: half a millisecond of relative motion, ~7.5 m at 15 km/s. That is
+       * three orders of magnitude below the ~7.5 km grid bias it replaces, and
+       * far below the uncertainty in the element sets themselves.
+       */
+      const refinedMs = Math.round(vertexMs);
+      const refinedTime = new Date(refinedMs);
+      const refined1 = propagateAt(satrec1, refinedTime);
+      const refined2 = propagateAt(satrec2, refinedTime);
+      if (refined1 !== null && refined2 !== null) {
+        const refinedRange = eciDistance(refined1.positionEci, refined2.positionEci);
+        // Never regress: a pathological fit must not worsen the reported miss.
+        if (refinedRange < best.range) {
+          best = { range: refinedRange, point1: refined1, point2: refined2 };
+          // Keep the sampled trajectories passing through the true minimum, so
+          // the animator interpolates across it instead of cutting the corner.
+          insertByTimestamp(orbit1, refined1);
+          insertByTimestamp(orbit2, refined2);
+        }
+      }
+    }
   }
 
   const relativeVelocity: EciVector = {

@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   computeCloseApproach,
   eciToThreeJs,
+  parabolicVertex,
   propagateOrbit,
   subSatellitePoint,
 } from '../src/propagator.js';
-import { getEarthRotationRadians } from '../src/analysis.js';
+import { eciDistance, getEarthRotationRadians } from '../src/analysis.js';
 import type { EciVector, OrbitalElements } from '../src/types.js';
 
 /** ISS-like OMM element set (values representative of the real orbit). */
@@ -228,5 +229,146 @@ describe('subSatellitePoint for a geostationary orbit', () => {
     for (const point of derived) {
       expect(Math.abs(point.latitude)).toBeLessThan(0.5);
     }
+  });
+});
+
+describe('parabolicVertex', () => {
+  /**
+   * Fitted to SQUARED distances on purpose: near a close approach the relative
+   * motion is locally linear, so d² = dmin² + v²(t-t*)² is exactly a parabola
+   * while d itself is a hyperbola. These cases therefore have exact answers.
+   */
+  it('recovers the vertex of an exact parabola', () => {
+    // y = 3(x-7)^2 + 5  ->  vertex at x = 7
+    const f = (x: number) => 3 * (x - 7) ** 2 + 5;
+    expect(parabolicVertex(5, f(5), 6, f(6), 9, f(9))).toBeCloseTo(7, 9);
+  });
+
+  it('handles unequal spacing, as at the fine/coarse grid boundary', () => {
+    const f = (x: number) => 2 * (x - 1.25) ** 2 + 1;
+    // Neighbours 1 s and 10 s away — the real grid changes step size.
+    expect(parabolicVertex(0, f(0), 1, f(1), 11, f(11))).toBeCloseTo(1.25, 9);
+  });
+
+  it('resolves a vertex that falls between integer samples', () => {
+    // True minimum at t = 0.3 between samples at -1, 0, 1.
+    const f = (x: number) => (x - 0.3) ** 2 + 4;
+    const vertex = parabolicVertex(-1, f(-1), 0, f(0), 1, f(1));
+    expect(vertex).not.toBeNull();
+    expect(vertex).toBeCloseTo(0.3, 9);
+    expect(Number.isInteger(vertex)).toBe(false);
+  });
+
+  it('stays accurate at epoch-millisecond magnitudes', () => {
+    // ~1.8e12 ms since 1970: squaring these directly would destroy the fit, so
+    // the implementation shifts to the middle sample first.
+    const t = 1_780_000_000_000;
+    const f = (x: number) => 0.5 * (x - (t + 325)) ** 2 + 10;
+    const vertex = parabolicVertex(t - 1000, f(t - 1000), t, f(t), t + 1000, f(t + 1000));
+    expect(vertex).toBeCloseTo(t + 325, 3);
+  });
+
+  it('returns null when the three points are not a strict minimum', () => {
+    expect(parabolicVertex(0, 1, 1, 1, 2, 1)).toBeNull(); // flat (co-orbital)
+    expect(parabolicVertex(0, 0, 1, 5, 2, 0)).toBeNull(); // concave: a maximum
+    expect(parabolicVertex(0, 0, 0, 1, 0, 2)).toBeNull(); // degenerate spacing
+  });
+});
+
+describe('sub-sample TCA refinement', () => {
+  /**
+   * Crossing pair: same altitude, planes 40° apart, so the separation has a
+   * sharp minimum instead of the flat one a co-orbital pair gives. Its true TCA
+   * lands 325 ms off the 1 s sample grid, which is precisely the case coarse
+   * sampling cannot represent.
+   */
+  const CROSSING: OrbitalElements = {
+    ...ISS_OMM,
+    NORAD_CAT_ID: 100002,
+    OBJECT_NAME: 'CROSSING TEST OBJECT',
+    INCLINATION: ISS_OMM.INCLINATION + 40,
+  };
+  const seed = new Date(EPOCH.getTime() + 25 * 60_000); // whole second, as SOCRATES gives
+  const details = computeCloseApproach(ISS_OMM, CROSSING, seed, 30);
+
+  /** Brute-force minimum at 1 ms resolution — the best answer obtainable. */
+  function bruteForceMinimum(centreMs: number, spanMs: number): number {
+    const a = propagateOrbit(ISS_OMM, new Date(centreMs - spanMs), new Date(centreMs + spanMs), 0.001);
+    const b = propagateOrbit(CROSSING, new Date(centreMs - spanMs), new Date(centreMs + spanMs), 0.001);
+    let best = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+      best = Math.min(best, eciDistance(a[i]!.positionEci, b[i]!.positionEci));
+    }
+    return best;
+  }
+
+  /** The best the coarse sweep alone could report: the 1 s grid anchored on the seed. */
+  function coarseGridMinimum(): number {
+    const nearest = seed.getTime() + Math.round((details.actualTca.getTime() - seed.getTime()) / 1000) * 1000;
+    let best = Number.POSITIVE_INFINITY;
+    for (let k = -3; k <= 3; k++) {
+      const t = new Date(nearest + k * 1000);
+      const a = propagateOrbit(ISS_OMM, t, t, 1);
+      const b = propagateOrbit(CROSSING, t, t, 1);
+      if (a[0] !== undefined && b[0] !== undefined) {
+        best = Math.min(best, eciDistance(a[0].positionEci, b[0].positionEci));
+      }
+    }
+    return best;
+  }
+
+  it('resolves a TCA that is not on the sample grid', () => {
+    // The sweep samples whole seconds from the seed; a refined TCA off that
+    // grid is only reachable by sub-sample refinement.
+    expect(details.actualTca.getTime() % 1000).not.toBe(0);
+  });
+
+  it('reports a smaller miss distance than coarse sampling alone', () => {
+    const coarse = coarseGridMinimum();
+    expect(details.actualMinRange).toBeLessThan(coarse);
+    // Measured: 7.5868 km coarse -> 7.3931 km refined, ~194 m of grid bias.
+    expect(coarse - details.actualMinRange).toBeGreaterThan(0.15);
+  });
+
+  it('matches a 1 ms brute-force scan to within a metre', () => {
+    const truth = bruteForceMinimum(details.actualTca.getTime(), 600);
+    expect(Math.abs(details.actualMinRange - truth)).toBeLessThan(0.001);
+  });
+
+  it('reduces the error against truth by orders of magnitude', () => {
+    const truth = bruteForceMinimum(details.actualTca.getTime(), 600);
+    const coarseError = coarseGridMinimum() - truth;
+    const refinedError = Math.abs(details.actualMinRange - truth);
+    expect(coarseError).toBeGreaterThan(0.15);
+    expect(refinedError).toBeLessThan(coarseError / 100);
+  });
+
+  it('reports the refined instant as the TCA positions', () => {
+    expect(details.position1AtTca.timestamp.getTime()).toBe(details.actualTca.getTime());
+    expect(details.position2AtTca.timestamp.getTime()).toBe(details.actualTca.getTime());
+  });
+
+  it('keeps the sampled trajectories passing through the refined minimum', () => {
+    // The animator interpolates along these; without the refined sample it
+    // would cut the corner at the closest approach.
+    const inOrbit1 = details.orbit1.some(
+      (p) => p.timestamp.getTime() === details.actualTca.getTime(),
+    );
+    expect(inOrbit1).toBe(true);
+    const times = details.orbit1.map((p) => p.timestamp.getTime());
+    expect([...times].sort((x, y) => x - y)).toEqual(times); // still time-ordered
+  });
+
+  it('never reports a worse miss than the coarse minimum', () => {
+    // Co-orbital pairs give a flat minimum where the fit is rejected; the
+    // coarse answer must survive untouched rather than being degraded.
+    const trailing: OrbitalElements = {
+      ...ISS_OMM,
+      NORAD_CAT_ID: 100003,
+      MEAN_ANOMALY: ISS_OMM.MEAN_ANOMALY + 0.05,
+    };
+    const flat = computeCloseApproach(ISS_OMM, trailing, new Date(EPOCH.getTime() + 30 * 60_000));
+    expect(flat.actualMinRange).toBeGreaterThan(0);
+    expect(Number.isFinite(flat.actualMinRange)).toBe(true);
   });
 });
