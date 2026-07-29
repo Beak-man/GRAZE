@@ -368,9 +368,24 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
   setStatus(() => t().status.showing(event.name1, event.name2));
 }
 
-/** Classify orbit regimes for all listed objects, a few fetches at a time. */
+/**
+ * Hard cap on how many objects get a GP lookup for regime classification.
+ *
+ * One request per unique object, so this scales with the baked set: the union
+ * carries ~1389 records ≈ 2700 objects, and classifying all of them would mean
+ * ~2700 CelesTrak requests *per first visit* — precisely the hammering the
+ * build-time bake exists to prevent. eventPassesFilters deliberately shows
+ * unclassified objects rather than hiding them, so capping degrades the regime
+ * filter's precision for deep rows instead of breaking it.
+ */
+const CLASSIFY_LIMIT = 60;
+
+/** Classify orbit regimes for the leading listed objects, a few fetches at a time. */
 async function classifyRegimes(events: ConjunctionEvent[]): Promise<void> {
-  const ids = [...new Set(events.flatMap((event) => [event.noradId1, event.noradId2]))];
+  const ids = [...new Set(events.flatMap((event) => [event.noradId1, event.noradId2]))].slice(
+    0,
+    CLASSIFY_LIMIT,
+  );
   const queue = [...ids];
   const workers = Array.from({ length: CLASSIFY_CONCURRENCY }, async () => {
     for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
