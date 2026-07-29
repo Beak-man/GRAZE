@@ -58,6 +58,14 @@ export interface EciVector {
 /** State of an object at a single propagation step. */
 export interface PropagatedPosition {
   timestamp: Date;
+  /**
+   * Exact evaluation time, float milliseconds since the Unix epoch.
+   *
+   * `timestamp` is a Date and therefore quantised to whole milliseconds; the
+   * refined TCA is not. This carries the sub-millisecond value the state was
+   * actually propagated at, and is what time-ordering should compare.
+   */
+  epochMs: number;
   /** Geodetic latitude, degrees (-90..90). */
   latitude: number;
   /** Geodetic longitude, degrees (-180..180). */
@@ -76,6 +84,8 @@ export interface CloseApproachDetails {
   actualMinRange: number;
   /** Time at which the minimum separation occurs. */
   actualTca: Date;
+  /** Exact TCA, float ms since the Unix epoch — see PropagatedPosition.epochMs. */
+  actualTcaEpochMs: number;
   /** Magnitude of the relative velocity at the actual TCA, km/s. */
   relativeVelocityAtTca: number;
   position1AtTca: PropagatedPosition;

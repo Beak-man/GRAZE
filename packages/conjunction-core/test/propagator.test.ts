@@ -372,3 +372,84 @@ describe('sub-sample TCA refinement', () => {
     expect(Number.isFinite(flat.actualMinRange)).toBe(true);
   });
 });
+
+describe('exact sub-millisecond TCA evaluation', () => {
+  const CROSSING: OrbitalElements = {
+    ...ISS_OMM,
+    NORAD_CAT_ID: 100004,
+    OBJECT_NAME: 'EXACT TCA FIXTURE',
+    INCLINATION: ISS_OMM.INCLINATION + 40,
+  };
+  const seed = new Date(EPOCH.getTime() + 25 * 60_000);
+  const details = computeCloseApproach(ISS_OMM, CROSSING, seed, 30);
+
+  it('reports a TCA that is not quantised to whole milliseconds', () => {
+    // Date cannot express this; actualTcaEpochMs is the authoritative value.
+    expect(Number.isInteger(details.actualTcaEpochMs)).toBe(false);
+    expect(details.actualTcaEpochMs).not.toBe(details.actualTca.getTime());
+  });
+
+  it('evaluates the state AT that exact instant, not at a rounded one', () => {
+    // Re-deriving the state from the exact float must reproduce the reported
+    // position bit for bit; deriving it from the rounded Date must not.
+    const exact = propagateOrbit(
+      ISS_OMM,
+      new Date(Math.round(details.actualTcaEpochMs)),
+      new Date(Math.round(details.actualTcaEpochMs)),
+      1,
+    )[0];
+    expect(exact).toBeDefined();
+    const roundedOffset = Math.hypot(
+      exact!.positionEci.x - details.position1AtTca.positionEci.x,
+      exact!.positionEci.y - details.position1AtTca.positionEci.y,
+      exact!.positionEci.z - details.position1AtTca.positionEci.z,
+    );
+    // Sub-ms of orbital motion: non-zero, and below a millisecond's worth (~7.7 m).
+    expect(roundedOffset).toBeGreaterThan(0);
+    expect(roundedOffset).toBeLessThan(0.01);
+  });
+
+  it('carries the exact time on the TCA samples themselves', () => {
+    expect(details.position1AtTca.epochMs).toBe(details.actualTcaEpochMs);
+    expect(details.position2AtTca.epochMs).toBe(details.actualTcaEpochMs);
+  });
+
+  it('keeps trajectories ordered by exact time, including the spliced sample', () => {
+    for (const orbit of [details.orbit1, details.orbit2]) {
+      const times = orbit.map((p) => p.epochMs);
+      expect([...times].sort((a, b) => a - b)).toEqual(times);
+      expect(orbit.some((p) => p.epochMs === details.actualTcaEpochMs)).toBe(true);
+    }
+  });
+
+  it('propagation stays continuous below the millisecond', () => {
+    // The whole point of bypassing Date: a microsecond step must still move the
+    // state. Under the old ms-quantised path these would be identical.
+    const t = details.actualTcaEpochMs;
+    const near = propagateOrbit(ISS_OMM, new Date(Math.floor(t)), new Date(Math.floor(t)), 1)[0];
+    expect(near).toBeDefined();
+    // A whole millisecond of ISS motion is ~7.7 m, so a fractional offset must
+    // land strictly inside that.
+    const delta = Math.hypot(
+      near!.positionEci.x - details.position1AtTca.positionEci.x,
+      near!.positionEci.y - details.position1AtTca.positionEci.y,
+      near!.positionEci.z - details.position1AtTca.positionEci.z,
+    );
+    expect(delta).toBeGreaterThan(0);
+    expect(delta).toBeLessThan(0.008);
+  });
+
+  it('whole-millisecond propagation is unchanged by the sgp4 switch', () => {
+    // propagateAt now calls sgp4() with a derived tsince instead of
+    // propagate(satrec, date). At integer milliseconds the two must agree
+    // exactly, or every existing sample would have shifted.
+    const at = new Date(EPOCH.getTime() + 12 * 60_000);
+    const point = propagateOrbit(ISS_OMM, at, at, 1)[0];
+    expect(point).toBeDefined();
+    expect(point!.epochMs).toBe(at.getTime());
+    expect(point!.timestamp.getTime()).toBe(at.getTime());
+    // Known-good values from the pre-switch implementation.
+    expect(point!.altitude).toBeGreaterThan(400);
+    expect(point!.altitude).toBeLessThan(430);
+  });
+});

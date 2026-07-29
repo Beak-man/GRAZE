@@ -230,8 +230,13 @@ function toState(point: PropagatedPosition): InterpolatedState {
 /**
  * Linearly interpolate an orbit's ECI state at an arbitrary time. Times
  * outside the sampled range clamp to the nearest end. Returns null for an
- * empty orbit. The samples are assumed to be sorted by timestamp, as
- * produced by propagateOrbit / computeCloseApproach.
+ * empty orbit. The samples are assumed to be sorted by time, as produced by
+ * propagateOrbit / computeCloseApproach.
+ *
+ * Ordering and weighting use `epochMs`, not `timestamp`: computeCloseApproach
+ * splices a sub-millisecond refined TCA sample into the trajectory, and a Date
+ * cannot represent it. Comparing Dates would collapse that sample onto its
+ * neighbour and produce a zero-width interval.
  */
 export function interpolateStateAt(
   orbit: PropagatedPosition[],
@@ -243,10 +248,10 @@ export function interpolateStateAt(
     return null;
   }
   const targetMs = time.getTime();
-  if (targetMs <= first.timestamp.getTime()) {
+  if (targetMs <= first.epochMs) {
     return toState(first);
   }
-  if (targetMs >= last.timestamp.getTime()) {
+  if (targetMs >= last.epochMs) {
     return toState(last);
   }
 
@@ -256,7 +261,7 @@ export function interpolateStateAt(
   while (low + 1 < high) {
     const mid = (low + high) >> 1;
     const midPoint = orbit[mid];
-    if (midPoint === undefined || midPoint.timestamp.getTime() <= targetMs) {
+    if (midPoint === undefined || midPoint.epochMs <= targetMs) {
       low = mid;
     } else {
       high = mid;
@@ -267,8 +272,8 @@ export function interpolateStateAt(
   if (before === undefined || after === undefined) {
     return null;
   }
-  const beforeMs = before.timestamp.getTime();
-  const afterMs = after.timestamp.getTime();
+  const beforeMs = before.epochMs;
+  const afterMs = after.epochMs;
   const t = afterMs === beforeMs ? 0 : (targetMs - beforeMs) / (afterMs - beforeMs);
   return {
     timestamp: new Date(targetMs),

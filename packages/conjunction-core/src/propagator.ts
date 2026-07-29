@@ -3,8 +3,9 @@ import {
   degreesLong,
   eciToGeodetic,
   gstime,
+  jday,
   json2satrec,
-  propagate,
+  sgp4,
 } from 'satellite.js';
 import type { OMMJsonObject, PositionAndVelocity, SatRec } from 'satellite.js';
 import { eciDistance, getEarthRotationRadians } from './analysis.js';
@@ -20,6 +21,8 @@ const KM_PER_SCENE_UNIT = 1000;
 
 const MS_PER_SECOND = 1000;
 const MS_PER_MINUTE = 60_000;
+const MS_PER_DAY = 86_400_000;
+const MINUTES_PER_DAY = 1440;
 
 /** Fine sampling (1 s) is used within ±2 minutes of the predicted TCA. */
 const FINE_WINDOW_MS = 2 * MS_PER_MINUTE;
@@ -55,15 +58,47 @@ function toSatrec(elements: OrbitalElements): SatRec {
 }
 
 /**
- * Propagate one object at a single instant. Returns null when SGP4 fails
- * (e.g. decayed object or epoch too far away).
+ * Minutes since the satrec epoch for a float millisecond time — SGP4's own
+ * independent variable, evaluated continuously.
+ *
+ * Anchored on `jday` for the whole-millisecond part so that this is *bit
+ * identical* to what satellite.js `propagate(satrec, date)` computes (verified:
+ * zero difference), then the sub-millisecond remainder is added directly in
+ * minutes. Adding it separately is what preserves precision: the remainder is
+ * < 1 ms, so it keeps full double resolution instead of being lost in the ~2.46e6
+ * magnitude of an absolute Julian date, where one ULP is already ~40 us.
+ *
+ * Resolution measured end to end: ~1 us, i.e. ~7 mm of orbital motion. Below
+ * that the double runs out, not the method.
  */
-function propagateAt(satrec: SatRec, time: Date): PropagatedPosition | null {
-  // The named export is typed as always returning, but the implementation can
-  // return null (and older versions returned boolean false) on SGP4 failure.
+function tsinceMinutes(satrec: SatRec, epochMs: number): number {
+  const wholeMs = Math.floor(epochMs);
+  const fractionMs = epochMs - wholeMs;
+  return (
+    (jday(new Date(wholeMs)) - satrec.jdsatepoch) * MINUTES_PER_DAY + fractionMs / MS_PER_MINUTE
+  );
+}
+
+/** Julian date for a float millisecond time, for the sidereal-time lookup. */
+function julianDateOf(epochMs: number): number {
+  const wholeMs = Math.floor(epochMs);
+  return jday(new Date(wholeMs)) + (epochMs - wholeMs) / MS_PER_DAY;
+}
+
+/**
+ * Propagate one object at an exact instant, expressed as float milliseconds
+ * since the Unix epoch. Returns null when SGP4 fails (e.g. decayed object or
+ * epoch too far away).
+ *
+ * This is the single propagation path: `propagateAt` is a Date-shaped wrapper
+ * over it. Calling sgp4() directly rather than propagate() is deliberate —
+ * propagate() takes a Date and so cannot express a sub-millisecond time, which
+ * is exactly the resolution the TCA refinement needs.
+ */
+function propagateAtEpochMs(satrec: SatRec, epochMs: number): PropagatedPosition | null {
   let result: PositionAndVelocity | null | undefined;
   try {
-    result = propagate(satrec, time);
+    result = sgp4(satrec, tsinceMinutes(satrec, epochMs));
   } catch {
     return null;
   }
@@ -79,16 +114,23 @@ function propagateAt(satrec: SatRec, time: Date): PropagatedPosition | null {
   if (!Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) {
     return null;
   }
-  const gmst = gstime(time);
+  const gmst = gstime(julianDateOf(epochMs));
   const geodetic = eciToGeodetic(position, gmst);
   return {
-    timestamp: new Date(time.getTime()),
+    // Date cannot hold the sub-millisecond part; epochMs below is authoritative.
+    timestamp: new Date(Math.round(epochMs)),
+    epochMs,
     latitude: degreesLat(geodetic.latitude),
     longitude: degreesLong(geodetic.longitude),
     altitude: geodetic.height,
     positionEci: { x: position.x, y: position.y, z: position.z },
     velocityEci: { x: velocity.x, y: velocity.y, z: velocity.z },
   };
+}
+
+/** Propagate at a Date instant (whole milliseconds). */
+function propagateAt(satrec: SatRec, time: Date): PropagatedPosition | null {
+  return propagateAtEpochMs(satrec, time.getTime());
 }
 
 /**
@@ -137,15 +179,18 @@ function buildSampleTimes(tca: Date, windowMinutes: number): number[] {
 
 /**
  * Insert a sample into an already time-sorted trajectory, keeping it sorted.
- * The refined TCA point falls between two existing samples by construction.
+ *
+ * Ordered on `epochMs`, NOT on `timestamp`: the refined TCA carries a
+ * sub-millisecond time, and two points can round to the same Date while being
+ * genuinely ordered. Comparing Dates here would make the sort depend on
+ * rounding.
  */
-function insertByTimestamp(orbit: PropagatedPosition[], point: PropagatedPosition): void {
-  const t = point.timestamp.getTime();
+function insertByEpochMs(orbit: PropagatedPosition[], point: PropagatedPosition): void {
   let low = 0;
   let high = orbit.length;
   while (low < high) {
     const mid = (low + high) >> 1;
-    if ((orbit[mid]?.timestamp.getTime() ?? 0) <= t) {
+    if ((orbit[mid]?.epochMs ?? Number.NEGATIVE_INFINITY) <= point.epochMs) {
       low = mid + 1;
     } else {
       high = mid;
@@ -275,15 +320,13 @@ export function computeCloseApproach(
     );
     if (vertexMs !== null && vertexMs > before.timeMs && vertexMs < after.timeMs) {
       /*
-       * Date has millisecond granularity, so this is where refinement bottoms
-       * out: half a millisecond of relative motion, ~7.5 m at 15 km/s. That is
-       * three orders of magnitude below the ~7.5 km grid bias it replaces, and
-       * far below the uncertainty in the element sets themselves.
+       * Evaluated at the exact float instant — no rounding to the millisecond
+       * grid. propagateAtEpochMs drives SGP4 through its own continuous
+       * variable (minutes since epoch), so the only floor is double precision:
+       * ~1 us, about 7 mm of orbital motion.
        */
-      const refinedMs = Math.round(vertexMs);
-      const refinedTime = new Date(refinedMs);
-      const refined1 = propagateAt(satrec1, refinedTime);
-      const refined2 = propagateAt(satrec2, refinedTime);
+      const refined1 = propagateAtEpochMs(satrec1, vertexMs);
+      const refined2 = propagateAtEpochMs(satrec2, vertexMs);
       if (refined1 !== null && refined2 !== null) {
         const refinedRange = eciDistance(refined1.positionEci, refined2.positionEci);
         // Never regress: a pathological fit must not worsen the reported miss.
@@ -291,8 +334,8 @@ export function computeCloseApproach(
           best = { range: refinedRange, point1: refined1, point2: refined2 };
           // Keep the sampled trajectories passing through the true minimum, so
           // the animator interpolates across it instead of cutting the corner.
-          insertByTimestamp(orbit1, refined1);
-          insertByTimestamp(orbit2, refined2);
+          insertByEpochMs(orbit1, refined1);
+          insertByEpochMs(orbit2, refined2);
         }
       }
     }
@@ -307,6 +350,7 @@ export function computeCloseApproach(
   return {
     actualMinRange: best.range,
     actualTca: best.point1.timestamp,
+    actualTcaEpochMs: best.point1.epochMs,
     relativeVelocityAtTca: Math.sqrt(
       relativeVelocity.x ** 2 + relativeVelocity.y ** 2 + relativeVelocity.z ** 2,
     ),

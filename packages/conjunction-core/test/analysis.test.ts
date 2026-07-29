@@ -145,6 +145,8 @@ describe('eciDistance', () => {
 function samplePoint(timeMs: number, x: number): PropagatedPosition {
   return {
     timestamp: new Date(timeMs),
+    // Exact time drives ordering and interpolation weights; see interpolateStateAt.
+    epochMs: timeMs,
     latitude: 0,
     longitude: 0,
     altitude: 400,
