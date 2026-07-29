@@ -228,6 +228,21 @@ drive it.
 | Plain server | `crontab` | `0 */8 * * * cd /srv/graze && npm run build` |
 | None | — | Fully supported. The client falls back to runtime fetch. |
 
+### Monitoring the scheduler (dead-man's switch)
+
+Scheduled GitHub Actions workflows **auto-disable after 60 days of repository
+inactivity**, and nothing in the app reports that. The first symptom is the
+stale-data banner — by which point every visitor who clicks "Fetch latest" is
+being sent straight to CelesTrak.
+
+The workflow pings a healthcheck URL after each successful deploy. Set a
+repository secret named `HEALTHCHECK_URL` (from
+[healthchecks.io](https://healthchecks.io), Better Stack, Cronitor, or any
+service that alerts when an expected ping stops arriving) and configure the
+monitor to expect a ping every 8 hours with some grace.
+
+If the secret is absent the step is skipped, so forks are unaffected.
+
 ### Environment variables
 
 Build-time / script (Node):

@@ -126,6 +126,19 @@ metadata causes 304 responses with no file to reuse — the script guards agains
 this by sending an unconditional GET when validators exist but the output file
 does not, but the cache should still carry both.
 
+**GitHub Actions caches are evicted after 7 days without access, and a
+`restore-keys` match counts as access.** With the 8-hour cron the chain renews
+itself indefinitely. A gap longer than 7 days between runs (schedule disabled,
+repo archived, long pause) means the next fetch is a full `200` rather than a
+`304` — that is correct behaviour, not a bug. Do not "fix" it.
+
+**A dead scheduler is invisible without an external monitor.** Scheduled
+workflows auto-disable after 60 days of repository inactivity; nothing in the
+app reports that. The symptom is the stale-data banner, and by then every
+visitor who clicks "Fetch latest" is hitting CelesTrak directly. The workflow
+pings `secrets.HEALTHCHECK_URL` after a successful deploy for exactly this
+reason; the step self-skips when the secret is absent, so forks are unaffected.
+
 ## CORS
 CelesTrak returns `Access-Control-Allow-Origin: *` on SOCRATES endpoints,
 verified 2026-07-29. No proxy is required; `VITE_CELESTRAK_BASE` is an unused

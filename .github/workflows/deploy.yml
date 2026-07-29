@@ -40,10 +40,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
           cache: npm
@@ -55,7 +55,7 @@ jobs:
       # stored ETag would freeze forever.
       - name: Restore SOCRATES cache
         if: ${{ !inputs.force_refresh }}
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             .cache
@@ -80,33 +80,60 @@ jobs:
           # is a repository-variable change rather than a code change.
           VITE_CELESTRAK_BASE: ${{ vars.VITE_CELESTRAK_BASE }}
 
-      # Surface data freshness in the Actions tab so staleness is visible
-      # without opening the site.
+      # Surface data freshness two ways, on purpose:
+      #  - $GITHUB_STEP_SUMMARY renders on the run's web page, but that buffer
+      #    is NOT exposed by the REST API or `gh run view --log`.
+      #  - stdout is, so these values stay greppable for an unattended deploy.
+      # Both are wanted; do not collapse this into one.
       - name: Summarize baked data
         if: always()
         run: |
           FILE=packages/conjunction-web/public/data/socrates.json
-          {
-            echo "### SOCRATES data"
-            if [ -f "$FILE" ]; then
-              node -e '
-                const d = require("./" + process.argv[1]);
-                console.log("- sourceLastModified: `" + (d.sourceLastModified ?? "unknown") + "`");
-                console.log("- socratesEpoch: `" + (d.socratesEpoch ?? "none in CSV") + "`");
-                console.log("- recordCount: `" + d.recordCount + "`");
-                console.log("- generatedAt: `" + d.generatedAt + "`");
-                console.log("- sourceUrl: " + d.sourceUrl);
-              ' "$FILE"
-            else
-              echo "No baked data file was produced."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$FILE" ]; then
+            node -e '
+              const d = require("./" + process.argv[1]);
+              const rows = [
+                ["sourceLastModified", d.sourceLastModified ?? "unknown"],
+                ["socratesEpoch", d.socratesEpoch ?? "none in CSV"],
+                ["recordCount", String(d.recordCount)],
+                ["generatedAt", d.generatedAt],
+                ["sourceUrl", d.sourceUrl],
+              ];
+              // Greppable, one key=value per line.
+              for (const [k, v] of rows) console.log(`SOCRATES_${k}=${v}`);
+              // Markdown for the run page.
+              const md = ["### SOCRATES data", "", "| field | value |", "| --- | --- |"]
+                .concat(rows.map(([k, v]) => `| ${k} | \`${v}\` |`))
+                .join("\n");
+              require("node:fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, md + "\n");
+            ' "$FILE"
+          else
+            echo "SOCRATES_status=no baked data file was produced"
+            echo "### SOCRATES data
+          No baked data file was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: packages/conjunction-web/dist
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+
+      # Dead-man's switch. Scheduled workflows auto-disable after 60 days of
+      # repository inactivity, and a dead scheduler is otherwise invisible until
+      # someone notices the stale-data banner — by which point every visitor who
+      # clicks "Fetch latest" is being sent straight to CelesTrak. An external
+      # monitor (healthchecks.io, Better Stack, Cronitor, …) that expects a ping
+      # every 8h turns that silence into an alert.
+      #
+      # Skipped when the secret is absent, so forks are unaffected and the
+      # workflow stays portable. `|| true` keeps a monitoring outage from
+      # failing an otherwise good deploy.
+      - name: Ping healthcheck
+        if: success() && env.HEALTHCHECK_URL != ''
+        env:
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+        run: curl -fsS --retry 3 "$HEALTHCHECK_URL" || true
