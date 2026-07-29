@@ -193,9 +193,23 @@ export interface EarthScene {
    * and OrbitControls stays interactive — a drag cancels the sweep.
    */
   focusOn(target: { x: number; y: number; z: number }): void;
+  /**
+   * Resolves once the Earth textures have finished loading — or failed. The
+   * globe renders black until they arrive (~7.7 MB), so the loading overlay
+   * waits on this. It always settles, so a failed asset can't strand the UI.
+   */
+  assetsReady: Promise<void>;
 }
 
-export function createEarthScene(container: HTMLElement): EarthScene {
+export interface EarthSceneOptions {
+  /** Called as each bundled texture finishes, to drive a loading indicator. */
+  onAssetProgress?: (loaded: number, total: number) => void;
+}
+
+export function createEarthScene(
+  container: HTMLElement,
+  options: EarthSceneOptions = {},
+): EarthScene {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000005);
 
@@ -251,7 +265,23 @@ export function createEarthScene(container: HTMLElement): EarthScene {
   const sunLight = new THREE.DirectionalLight(0xfff4e0, 2.0);
   scene.add(sunLight);
 
-  const textureLoader = new THREE.TextureLoader();
+  // A LoadingManager reports when every texture has settled, which is what the
+  // loading overlay waits on. onLoad fires even if some items errored, and the
+  // caller also applies its own timeout, so the overlay can't get stuck.
+  const loadingManager = new THREE.LoadingManager();
+  let markAssetsReady: () => void = () => {};
+  const assetsReady = new Promise<void>((resolve) => {
+    markAssetsReady = resolve;
+  });
+  loadingManager.onLoad = () => markAssetsReady();
+  loadingManager.onProgress = (_url, loaded, total) => {
+    options.onAssetProgress?.(loaded, total);
+  };
+  loadingManager.onError = (url) => {
+    console.warn(`Texture failed to load: ${url}`);
+  };
+
+  const textureLoader = new THREE.TextureLoader(loadingManager);
   const loadEarthTexture = (path: string): THREE.Texture => {
     const texture = textureLoader.load(path);
     texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
@@ -326,6 +356,11 @@ export function createEarthScene(container: HTMLElement): EarthScene {
     }
 
     sunDirectionScene(currentTime, sunDirection);
+    // This spin is what puts satellite positions over the right geography.
+    // conjunction-core's subSatellitePoint() inverts exactly this transform and
+    // is unit-tested against satellite.js's geodetic conversion, so keep the two
+    // in sync if this ever changes. (The tween below is a transient viewing
+    // offset that decays to zero, so it does not affect the steady-state frame.)
     earth.rotation.y = getEarthRotationRadians(currentTime);
     if (focusTween !== null && eased !== null) {
       // Ease the globe from its previous orientation to the new instant's,
@@ -360,6 +395,7 @@ export function createEarthScene(container: HTMLElement): EarthScene {
 
   return {
     overlay,
+    assetsReady,
     onFrame(callback) {
       frameCallbacks.add(callback);
       return () => frameCallbacks.delete(callback);

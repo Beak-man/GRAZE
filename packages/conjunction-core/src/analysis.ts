@@ -31,6 +31,42 @@ export function summarizeOrbit(elements: OrbitalElements): OrbitSummary {
   };
 }
 
+/**
+ * The fields SGP4 actually propagates from. Identity and bookkeeping fields
+ * (NORAD_CAT_ID, OBJECT_NAME, OBJECT_ID, REV_AT_EPOCH, ELEMENT_SET_NO) are
+ * excluded because they do not influence the trajectory.
+ */
+const SGP4_FIELDS = [
+  'EPOCH',
+  'MEAN_MOTION',
+  'ECCENTRICITY',
+  'INCLINATION',
+  'RA_OF_ASC_NODE',
+  'ARG_OF_PERICENTER',
+  'MEAN_ANOMALY',
+  'BSTAR',
+  'MEAN_MOTION_DOT',
+  'MEAN_MOTION_DDOT',
+] as const satisfies readonly (keyof OrbitalElements)[];
+
+/**
+ * True when two element sets describe the same orbit solution, so SGP4 will
+ * propagate them to identical positions at every instant.
+ *
+ * This happens upstream: CelesTrak's public GP endpoint sometimes publishes one
+ * shared solution for several pieces of a recent launch that have not been
+ * individually resolved yet (e.g. 2026-024A and 2026-024H). A conjunction
+ * between two such objects computes to exactly 0 m separation at 0 km/s, which
+ * would otherwise render as a single track with a meaningless "0 km" readout —
+ * so callers should detect this and explain it rather than display it.
+ *
+ * Note SOCRATES itself may report a real, non-zero miss for the same pair; its
+ * screening uses better-resolved orbits than the public GP API exposes.
+ */
+export function sharesOrbitSolution(a: OrbitalElements, b: OrbitalElements): boolean {
+  return SGP4_FIELDS.every((field) => a[field] === b[field]);
+}
+
 export type OrbitRegime = 'LEO' | 'MEO' | 'GEO' | 'HEO';
 
 /**
@@ -66,6 +102,13 @@ function wrapDegrees(degrees: number): number {
  * Unit vector from Earth's center to the Sun in the ECI (equatorial) frame,
  * using the simplified solar position from Jean Meeus, "Astronomical
  * Algorithms" (accuracy ~0.01°).
+ *
+ * FRAME: mean equinox **of date**, not J2000 — the mean-longitude rate below
+ * is 360°/tropical year, i.e. referred to the moving equinox, and the obliquity
+ * is of date. That already matches TEME, so do NOT apply
+ * precessionMatrixJ2000ToDate to this vector: it is not a J2000 quantity, and
+ * double-correcting would swing the terminator by ~0.371° (~41 km at the
+ * equator). Precession applies to the star catalogue, which *is* J2000.
  */
 export function getSunDirectionEci(date: Date): EciVector {
   const daysSinceJ2000 = (date.getTime() - J2000_MS) / MS_PER_DAY;

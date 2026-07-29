@@ -7,7 +7,7 @@ import {
   propagate,
 } from 'satellite.js';
 import type { OMMJsonObject, PositionAndVelocity, SatRec } from 'satellite.js';
-import { eciDistance } from './analysis.js';
+import { eciDistance, getEarthRotationRadians } from './analysis.js';
 import type {
   CloseApproachDetails,
   EciVector,
@@ -211,5 +211,46 @@ export function eciToThreeJs(positionEci: EciVector): EciVector {
     x: positionEci.x / KM_PER_SCENE_UNIT,
     y: positionEci.z / KM_PER_SCENE_UNIT,
     z: -positionEci.y / KM_PER_SCENE_UNIT,
+  };
+}
+
+/** Geographic point directly beneath a satellite (geocentric latitude). */
+export interface SubSatellitePoint {
+  /** Geocentric latitude, degrees (-90..90). Differs from geodetic by ≤ ~0.2°. */
+  latitude: number;
+  /** Longitude, degrees (-180..180). Identical to geodetic longitude. */
+  longitude: number;
+}
+
+/**
+ * Geographic point under a satellite, derived by *inverting the render
+ * transform* rather than by the usual geodetic conversion.
+ *
+ * The scene is ECI-aligned and the globe mesh is spun by
+ * `getEarthRotationRadians(date)` about scene +Y (see the Earth mesh setup in
+ * conjunction-web/src/scene/earth.ts). So undoing that spin on a satellite's
+ * scene position yields its position in the mesh's own (Earth-fixed) frame,
+ * where — verified against satellite.js geodeticToEcf/ecfToEci — mesh-local
+ * +X is longitude 0, -Z is longitude 90°E, and +Y is north.
+ *
+ * This exists as an independent second path to the same answer: propagateOrbit
+ * reports latitude/longitude via satellite.js `eciToGeodetic`, and the unit
+ * tests assert the two agree. That cross-check is what proves a satellite is
+ * drawn over the ground track it actually flies, and it fails loudly if the
+ * axis mapping, the rotation direction, or the GMST offset ever regress.
+ */
+export function subSatellitePoint(positionEci: EciVector, date: Date): SubSatellitePoint {
+  const scene = eciToThreeJs(positionEci);
+  const theta = getEarthRotationRadians(date);
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  // Ry(-theta) applied to the scene position.
+  const xLocal = scene.x * cos - scene.z * sin;
+  const zLocal = scene.x * sin + scene.z * cos;
+  const yLocal = scene.y;
+  const radius = Math.hypot(xLocal, yLocal, zLocal);
+  return {
+    latitude: radius === 0 ? 0 : (Math.asin(yLocal / radius) * 180) / Math.PI,
+    longitude: (Math.atan2(-zLocal, xLocal) * 180) / Math.PI,
   };
 }

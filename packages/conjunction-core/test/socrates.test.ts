@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fetchConjunctions } from '../src/socrates.js';
 import { parseSocratesCsv } from '../src/socrates.js';
 
 const SAMPLE_CSV = `NORAD_CAT_ID_1,OBJECT_NAME_1,DSE_1,NORAD_CAT_ID_2,OBJECT_NAME_2,DSE_2,TCA,TCA_RANGE,TCA_RELATIVE_SPEED,MAX_PROB,DILUTION
@@ -63,5 +64,67 @@ describe('parseSocratesCsv', () => {
 
   it('throws when a required column is missing', () => {
     expect(() => parseSocratesCsv('FOO,BAR\n1,2\n')).toThrow(/missing expected column/);
+  });
+});
+
+describe('fetchConjunctions onMeta', () => {
+  const CSV = [
+    'NORAD_CAT_ID_1,OBJECT_NAME_1,DSE_1,NORAD_CAT_ID_2,OBJECT_NAME_2,DSE_2,TCA,TCA_RANGE,TCA_RELATIVE_SPEED,MAX_PROB',
+    '25544,ISS [+],1.0,100001,DEB [-],2.0,2026-07-29 01:02:03.000,0.013,14.4,1.19E-02',
+  ].join('\n');
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** All HTTP is stubbed; nothing here contacts CelesTrak. */
+  function stubFetch(headers: Record<string, string>): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers(headers),
+        text: async () => CSV,
+      })),
+    );
+  }
+
+  it('reports the upstream Last-Modified so callers can show the data epoch', async () => {
+    stubFetch({ 'last-modified': 'Mon, 27 Jul 2026 23:00:00 GMT' });
+    let seen: Date | null | undefined;
+    await fetchConjunctions({
+      maxResults: 5,
+      onMeta: ({ lastModified }) => {
+        seen = lastModified;
+      },
+    });
+    expect(seen?.toISOString()).toBe('2026-07-27T23:00:00.000Z');
+  });
+
+  it('reports null when the server omits the header', async () => {
+    stubFetch({});
+    let seen: Date | null | undefined = undefined;
+    await fetchConjunctions({ maxResults: 5, onMeta: ({ lastModified }) => {
+      seen = lastModified;
+    } });
+    expect(seen).toBeNull();
+  });
+
+  it('reports null for an unparseable header rather than an Invalid Date', async () => {
+    stubFetch({ 'last-modified': 'not a date' });
+    let seen: Date | null | undefined = undefined;
+    await fetchConjunctions({ maxResults: 5, onMeta: ({ lastModified }) => {
+      seen = lastModified;
+    } });
+    expect(seen).toBeNull();
+  });
+
+  it('still parses normally when no onMeta callback is supplied', async () => {
+    stubFetch({ 'last-modified': 'Mon, 27 Jul 2026 23:00:00 GMT' });
+    const events = await fetchConjunctions({ maxResults: 5 });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.noradId1).toBe(25544);
   });
 });

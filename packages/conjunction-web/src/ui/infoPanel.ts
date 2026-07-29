@@ -13,10 +13,15 @@ import {
 } from '../format.js';
 import { onLanguageChange, t } from '../i18n/translator.js';
 
+/**
+ * The replaceable region of the info panel. Deliberately NOT #info-panel
+ * itself: the data-provenance timestamps live as a sibling and must survive
+ * every render here (see ui/dataTimestamps.ts).
+ */
 function panel(): HTMLElement {
-  const element = document.getElementById('info-panel');
+  const element = document.getElementById('info-panel-body');
   if (element === null) {
-    throw new Error('Missing #info-panel element');
+    throw new Error('Missing #info-panel-body element');
   }
   return element;
 }

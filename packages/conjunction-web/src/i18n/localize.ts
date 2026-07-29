@@ -27,6 +27,8 @@ export function localizeStaticDom(): void {
 
   setText('#disclaimer', d.app.disclaimer);
   setText('.meta', d.app.subtitle);
+  // #loading-text is owned by main.ts (it interleaves with load progress);
+  // index.html's inline script sets the pre-bundle default.
   // data-tip is the hover bubble (full paragraph); aria-label is the short name.
   setAttr('#about-graze', 'data-tip', d.app.aboutTip);
   setAttr('#about-graze', 'aria-label', d.tooltips.aboutGraze);

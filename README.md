@@ -201,6 +201,67 @@ too.
    applies the long-lived cache headers. If you also need the CORS proxy, deploy
    the Worker below and set `VITE_CELESTRAK_BASE`.
 
+## Deploying elsewhere
+
+**There is no hard CI dependency.** The scheduled workflow in
+`.github/workflows/deploy.yml` is a convenience, not a requirement. With no
+scheduler configured at all, the app finds no baked data file and falls back to
+fetching SOCRATES at runtime — it still works, it just pulls the CSV per visitor
+instead of once per schedule.
+
+The build is `npm ci && npm run build` on any platform. **Verified property:**
+the build succeeds with the network fully disabled — the fetch step warns, exits
+0, and the app falls back to runtime mode at load.
+
+All acquisition logic lives in `scripts/fetch-socrates.mjs`, which is plain Node
+with no CI-vendor specifics. Any scheduler that can run a command on a timer can
+drive it.
+
+### Scheduler equivalents
+
+| Platform | Mechanism | Notes |
+| --- | --- | --- |
+| GitHub Actions | `schedule:` cron in the workflow | What this repo ships. **Auto-disables after 60 days of repository inactivity.** |
+| GitLab CI | Pipeline schedules (*CI/CD → Schedules*) | Run `npm ci && npm run build`, publish `dist/`. |
+| Cloudflare Workers | Cron Triggers | Worker runs the bake and writes to R2/KV, or triggers a Pages deploy hook. |
+| Netlify | Scheduled build hooks | Create a build hook, call it from any cron. |
+| Plain server | `crontab` | `0 */8 * * * cd /srv/graze && npm run build` |
+| None | — | Fully supported. The client falls back to runtime fetch. |
+
+### Environment variables
+
+Build-time / script (Node):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SOCRATES_URL` | `https://celestrak.org/SOCRATES/sort-minRange.csv` | Source CSV for the bake step. |
+| `STRICT_DATA` | unset | `1` makes a failed fetch exit non-zero instead of degrading to exit 0. Use in CI. |
+| `SOCRATES_MAX_RECORDS` | `10` | How many conjunctions to bake. |
+| `SOCRATES_CONTACT` | a placeholder address | Contact string embedded in the `User-Agent`. **Set your own if you fork.** |
+
+Client (Vite, must be set at build time):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VITE_DATA_MODE` | `auto` | `auto` \| `baked` \| `runtime`. `baked` never networks; `runtime` never reads the baked file. |
+| `VITE_MAX_DATA_AGE_HOURS` | `8` | Age past which baked data is shown with a "fetch latest" banner. |
+| `VITE_SOCRATES_URL` | unset | Endpoint for the runtime fallback and the manual refresh. |
+| `VITE_USE_LOCAL_SOCRATES` | unset | `true` forces the bundled dev snapshot. In dev this is the default unless `VITE_USE_LIVE=true`. |
+| `VITE_CELESTRAK_BASE` | unset (direct) | Optional CORS proxy origin. Not required today — see below. |
+
+### CelesTrak courtesy
+
+If you fork this, please:
+
+- **Set your own contact** in the `User-Agent` via `SOCRATES_CONTACT`. CelesTrak
+  blocks anonymous automated clients, and a real contact means they can reach
+  you instead of just blocking you.
+- **Do not lower the fetch interval below 8 hours.** SOCRATES only regenerates a
+  few times daily, so polling harder returns identical bytes, gains you nothing,
+  and risks getting blocked.
+- The bake step already sends `If-None-Match`/`If-Modified-Since`, so an
+  unchanged upstream costs a `304` and almost no bandwidth. Keep that behaviour.
+
 ## Working offline / when CelesTrak is down
 
 A SOCRATES snapshot and matching GP element sets are bundled under

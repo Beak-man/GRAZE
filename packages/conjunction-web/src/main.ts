@@ -5,6 +5,7 @@ import {
   fetchConjunctions,
   fetchOrbitalElements,
   parseSocratesCsv,
+  sharesOrbitSolution,
   summarizeOrbit,
 } from 'conjunction-core';
 import type { ConjunctionEvent, OrbitalElements } from 'conjunction-core';
@@ -22,10 +23,25 @@ import type { TimeAnimatorElements } from './scene/animator.js';
 import { Sidebar } from './ui/sidebar.js';
 import { showInfoDetails, showInfoError, showInfoLoading, showInfoPlaceholder } from './ui/infoPanel.js';
 import { initTooltips } from './ui/tooltip.js';
+import {
+  hideStaleBanner,
+  initDataBanner,
+  setBannerFailed,
+  setBannerFetching,
+  showStaleBanner,
+} from './ui/dataBanner.js';
+import { initDataTimestamps, setDataEpoch } from './ui/dataTimestamps.js';
+import {
+  dataEpochOf,
+  loadBaked,
+  readSourceConfig,
+  selectSource,
+} from './data/socratesSource.js';
+import type { BakedSocrates, SourceConfig } from './data/socratesSource.js';
 import { readCache, writeCache } from './cache.js';
 import { initI18n } from './i18n/localize.js';
 import { onLanguageChange, t } from './i18n/translator.js';
-import { formatTca } from './format.js';
+import { formatRange, formatTca } from './format.js';
 
 // In dev, same-origin requests go through the Vite proxy (vite.config.ts).
 // In production we hit CelesTrak directly unless a proxy origin (e.g. the
@@ -46,7 +62,9 @@ const CLASSIFY_CONCURRENCY = 4;
 // longer. Reloads within these windows make no CelesTrak requests.
 const SOCRATES_TTL_MS = 8 * 60 * 60 * 1000;
 const GP_TTL_MS = 24 * 60 * 60 * 1000;
-const SOCRATES_CACHE_KEY = `socrates:${TOP_CONJUNCTIONS}:MINRANGE`;
+// v2 carries the upstream epoch alongside the events; the new key means any
+// v1-shaped entry is simply a miss rather than being misread.
+const SOCRATES_CACHE_KEY = `socrates:v2:${TOP_CONJUNCTIONS}:MINRANGE`;
 const gpCacheKey = (noradId: number): string => `gp:${noradId}`;
 /** Bundled SOCRATES snapshot for when CelesTrak is unreachable. */
 const LOCAL_TEST_DATA_URL = '/test-data/socrates-sample.csv';
@@ -65,6 +83,16 @@ function envFlag(value: unknown): boolean {
 const DEV_DEFAULT_LOCAL = import.meta.env.DEV && !envFlag(import.meta.env.VITE_USE_LIVE);
 const USE_LOCAL_SOCRATES = envFlag(import.meta.env.VITE_USE_LOCAL_SOCRATES) || DEV_DEFAULT_LOCAL;
 let useLocalGp = envFlag(import.meta.env.VITE_USE_LOCAL_GP) || DEV_DEFAULT_LOCAL;
+
+// Data-source policy. useLocalSocrates carries the *effective* flag, so the
+// long-standing dev default (bundled data unless VITE_USE_LIVE=true) keeps
+// working alongside an explicit VITE_USE_LOCAL_SOCRATES.
+const sourceConfig: SourceConfig = {
+  ...readSourceConfig(import.meta.env as unknown as Record<string, unknown>, import.meta.env.DEV),
+  useLocalSocrates: USE_LOCAL_SOCRATES,
+};
+/** Endpoint used only by the runtime fallback and the manual refresh. */
+const RUNTIME_SOCRATES_URL: unknown = import.meta.env.VITE_SOCRATES_URL;
 
 function requireElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -99,7 +127,48 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const scene = createEarthScene(requireElement('viewport'));
+/**
+ * Startup overlay (see #loading-overlay in index.html). The globe renders black
+ * until ~7.7 MB of textures arrive, so the overlay covers that wait and reports
+ * progress as each one lands.
+ */
+const LOADING_FADE_MS = 450;
+/**
+ * Absolute last resort, only for an asset that never settles — an untextured
+ * globe still beats a permanent overlay. It must stay well clear of a normal
+ * slow load: measured end-to-end at ~52 s over a throttled 1.5 Mbps link, and
+ * this timer only starts once the JS bundle itself has arrived.
+ */
+const LOADING_FAILSAFE_MS = 120_000;
+let loadingDismissed = false;
+function dismissLoadingOverlay(): void {
+  if (loadingDismissed) {
+    return;
+  }
+  loadingDismissed = true;
+  const overlay = requireElement('loading-overlay');
+  overlay.classList.add('fading');
+  window.setTimeout(() => overlay.classList.add('hidden'), LOADING_FADE_MS);
+}
+
+// Rendered through a thunk so a language switch mid-download re-renders it in
+// place, exactly like the status line below.
+let loadingTextRender: () => string = () => t().app.loadingAssets;
+function renderLoadingText(): void {
+  if (!loadingDismissed) {
+    requireElement('loading-text').textContent = loadingTextRender();
+  }
+}
+
+const scene = createEarthScene(requireElement('viewport'), {
+  onAssetProgress: (loaded, total) => {
+    loadingTextRender = () => t().app.loadingAssetsProgress(loaded, total);
+    renderLoadingText();
+  },
+});
+
+void scene.assetsReady.then(dismissLoadingOverlay);
+window.setTimeout(dismissLoadingOverlay, LOADING_FAILSAFE_MS);
 
 const animatorElements: TimeAnimatorElements = {
   hud: requireElement('hud'),
@@ -229,6 +298,18 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
     return; // A newer selection superseded this one.
   }
 
+  // Upstream sometimes publishes one shared orbit solution for two pieces of a
+  // recent launch. SGP4 then propagates both to the identical point, which would
+  // render as a single track with a meaningless "0 m" readout. Explain instead.
+  if (sharesOrbitSolution(elements1, elements2)) {
+    setStatus(() => t().status.sharedOrbitSolution);
+    const objectId1 = elements1.OBJECT_ID ?? String(event.noradId1);
+    const objectId2 = elements2.OBJECT_ID ?? String(event.noradId2);
+    const socratesRange = formatRange(event.minRange);
+    showInfoError(() => t().errors.sharedOrbitSolution(objectId1, objectId2, socratesRange));
+    return;
+  }
+
   showInfoLoading(() => t().infoPanel.propagating);
   let details;
   try {
@@ -296,9 +377,19 @@ async function classifyRegimes(events: ConjunctionEvent[]): Promise<void> {
   await Promise.all(workers);
 }
 
+/** What the runtime path caches: the events plus the upstream publication time. */
+interface CachedSocrates {
+  events: ConjunctionEvent[];
+  /** ISO string, or null when the server sent no Last-Modified. */
+  sourceEpoch: string | null;
+}
+
 /** JSON serialization turns each event's tca into a string; rebuild the Date. */
-function reviveEvents(events: ConjunctionEvent[]): ConjunctionEvent[] {
-  return events.map((event) => ({ ...event, tca: new Date(event.tca) }));
+function reviveCached(cached: CachedSocrates): CachedSocrates {
+  return {
+    ...cached,
+    events: (cached.events ?? []).map((event) => ({ ...event, tca: new Date(event.tca) })),
+  };
 }
 
 /** Populate the sidebar and start regime classification for a set of events. */
@@ -310,17 +401,62 @@ function showLiveEvents(events: ConjunctionEvent[], asOf: Date): void {
   void classifyRegimes(events);
 }
 
+/**
+ * Choose a data source and load it. See data/socratesSource.ts for the
+ * decision itself; this only performs the I/O each branch implies.
+ */
 async function loadConjunctions(): Promise<void> {
-  if (USE_LOCAL_SOCRATES) {
-    return loadLocalTestData(false);
+  // mode=runtime never reads the baked file; every other mode probes it first.
+  const baked = sourceConfig.mode === 'runtime' ? null : await loadBaked();
+  const selection = selectSource(
+    sourceConfig,
+    baked === null ? null : { dataEpoch: dataEpochOf(baked) },
+  );
+
+  switch (selection.kind) {
+    case 'local':
+      return loadLocalTestData(false);
+    case 'baked':
+      if (baked === null) {
+        // Only reachable with mode=baked and nothing baked: by contract this
+        // mode must not network, so say so rather than silently falling back.
+        setStatus(() => t().status.couldNotLoad);
+        sidebar.showMessage(t().errors.couldNotLoadLocalData('VITE_DATA_MODE=baked'), []);
+        setDataEpoch(null);
+        return;
+      }
+      showBakedEvents(baked);
+      return;
+    case 'baked-stale':
+      if (baked !== null) {
+        showBakedEvents(baked);
+        // Rendered anyway; the banner offers a refresh but never takes it.
+        showStaleBanner(selection.ageMs);
+      }
+      return;
+    case 'runtime':
+      return loadRuntimeConjunctions();
   }
+}
+
+/** Render a baked payload; no network was touched to get here. */
+function showBakedEvents(baked: BakedSocrates): void {
+  const epoch = dataEpochOf(baked);
+  const asOf = epoch === null ? new Date(baked.generatedAt) : new Date(epoch);
+  showLiveEvents(baked.conjunctions.slice(0, TOP_CONJUNCTIONS), asOf);
+  setDataEpoch(epoch === null ? null : new Date(epoch));
+}
+
+async function loadRuntimeConjunctions(): Promise<void> {
   const token = ++loadToken;
 
   // Serve the list from the persistent cache while it is still fresh, so a
   // reload within the TTL makes no SOCRATES request (and skips the 16 MB CSV).
-  const cached = readCache<ConjunctionEvent[]>(SOCRATES_CACHE_KEY, SOCRATES_TTL_MS, reviveEvents);
-  if (cached !== null) {
-    showLiveEvents(cached.data, cached.savedAt);
+  const cached = readCache<CachedSocrates>(SOCRATES_CACHE_KEY, SOCRATES_TTL_MS, reviveCached);
+  if (cached !== null && cached.data.events.length > 0) {
+    const epoch = cached.data.sourceEpoch === null ? null : new Date(cached.data.sourceEpoch);
+    showLiveEvents(cached.data.events, epoch ?? cached.savedAt);
+    setDataEpoch(epoch);
     return;
   }
 
@@ -328,16 +464,26 @@ async function loadConjunctions(): Promise<void> {
   indicator.classList.remove('hidden');
   setStatus(() => t().status.fetchingSocrates);
   try {
+    // Capture the upstream publication time so the epoch row shows when the
+    // data is from, not when we happened to fetch it.
+    let sourceEpoch: Date | null = null;
     const events = await fetchConjunctions({
       maxResults: TOP_CONJUNCTIONS,
       sortBy: 'MINRANGE',
       baseUrl: CELESTRAK_BASE_URL,
+      onMeta: ({ lastModified }) => {
+        sourceEpoch = lastModified;
+      },
     });
     if (token !== loadToken) {
       return;
     }
-    writeCache(SOCRATES_CACHE_KEY, events);
-    showLiveEvents(events, new Date());
+    writeCache<CachedSocrates>(SOCRATES_CACHE_KEY, {
+      events,
+      sourceEpoch: sourceEpoch === null ? null : (sourceEpoch as Date).toISOString(),
+    });
+    showLiveEvents(events, sourceEpoch ?? new Date());
+    setDataEpoch(sourceEpoch);
   } catch (error) {
     if (token !== loadToken) {
       return;
@@ -382,6 +528,9 @@ async function loadLocalTestData(switchGpToLocal: boolean): Promise<void> {
     setDataAsOf(() => t().status.dataAsOfLocal);
     const withGp = useLocalGp;
     setStatus(() => t().status.localConjunctions(events.length, withGp));
+    // The bundled snapshot carries no upstream epoch; render the row as unknown
+    // rather than implying the fetch time is the data time.
+    setDataEpoch(null);
     void classifyRegimes(events);
   } catch (error) {
     if (token !== loadToken) {
@@ -395,10 +544,49 @@ async function loadLocalTestData(switchGpToLocal: boolean): Promise<void> {
   }
 }
 
+/**
+ * Explicit user-initiated refresh from the stale banner. This is the ONLY path
+ * that pulls the live CSV when a baked file exists — nothing here runs on load
+ * or on a timer.
+ */
+async function fetchLatestFromSource(): Promise<void> {
+  setBannerFetching(true);
+  try {
+    const baseUrl =
+      typeof RUNTIME_SOCRATES_URL === 'string' && RUNTIME_SOCRATES_URL !== ''
+        ? RUNTIME_SOCRATES_URL
+        : CELESTRAK_BASE_URL;
+    let sourceEpoch: Date | null = null;
+    const events = await fetchConjunctions({
+      maxResults: TOP_CONJUNCTIONS,
+      sortBy: 'MINRANGE',
+      baseUrl,
+      onMeta: ({ lastModified }) => {
+        sourceEpoch = lastModified;
+      },
+    });
+    writeCache<CachedSocrates>(SOCRATES_CACHE_KEY, {
+      events,
+      sourceEpoch: sourceEpoch === null ? null : (sourceEpoch as Date).toISOString(),
+    });
+    showLiveEvents(events, sourceEpoch ?? new Date());
+    setDataEpoch(sourceEpoch);
+    hideStaleBanner();
+  } catch {
+    // Keep the previously rendered (stale) data on screen and say so.
+    setBannerFailed();
+  } finally {
+    setBannerFetching(false);
+  }
+}
+
 // Localize the static chrome, then keep the status line and footer in sync on
 // language changes. (Sidebar and info panel subscribe to their own updates.)
 initI18n();
+initDataTimestamps();
+initDataBanner(() => void fetchLatestFromSource());
 onLanguageChange(() => {
+  renderLoadingText();
   if (lastStatusRender !== null) {
     statusElement.textContent = lastStatusRender();
   }

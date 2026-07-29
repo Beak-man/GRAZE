@@ -1,0 +1,224 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  DEFAULT_MAX_AGE_HOURS,
+  dataEpochOf,
+  loadBaked,
+  readSourceConfig,
+  selectSource,
+} from '../src/data/socratesSource.js';
+import type { BakedSocrates, SourceConfig } from '../src/data/socratesSource.js';
+
+const NOW = new Date('2026-07-28T12:00:00Z');
+const HOUR = 3_600_000;
+
+function config(overrides: Partial<SourceConfig> = {}): SourceConfig {
+  return {
+    mode: 'auto',
+    maxAgeHours: DEFAULT_MAX_AGE_HOURS,
+    isDev: false,
+    useLocalSocrates: false,
+    ...overrides,
+  };
+}
+
+/** A baked probe whose epoch is `hours` before NOW. */
+function agedBy(hours: number): { dataEpoch: string } {
+  return { dataEpoch: new Date(NOW.getTime() - hours * HOUR).toISOString() };
+}
+
+describe('selectSource', () => {
+  it('branch 1: dev + VITE_USE_LOCAL_SOCRATES uses bundled data', () => {
+    const selection = selectSource(
+      config({ isDev: true, useLocalSocrates: true }),
+      agedBy(1),
+      NOW,
+    );
+    expect(selection.kind).toBe('local');
+  });
+
+  it('branch 1 is NOT age-gated: very stale local data still stays local', () => {
+    // The point of the guard: a freshness check here would push routine dev
+    // traffic onto CelesTrak, which is what the whole refactor exists to avoid.
+    const selection = selectSource(
+      config({ isDev: true, useLocalSocrates: true }),
+      agedBy(24 * 365),
+      NOW,
+    );
+    expect(selection.kind).toBe('local');
+  });
+
+  it('branch 1 holds even with no baked file at all (no network fallback)', () => {
+    const selection = selectSource(config({ isDev: true, useLocalSocrates: true }), null, NOW);
+    expect(selection.kind).toBe('local');
+  });
+
+  it('branch 2: fresh baked file is used', () => {
+    const selection = selectSource(config(), agedBy(2), NOW);
+    expect(selection.kind).toBe('baked');
+    expect(selection.kind === 'baked' && selection.ageMs).toBeCloseTo(2 * HOUR, -2);
+  });
+
+  it('branch 2 boundary: exactly at MAX_AGE is still fresh', () => {
+    const selection = selectSource(config({ maxAgeHours: 8 }), agedBy(8), NOW);
+    expect(selection.kind).toBe('baked');
+  });
+
+  it('branch 3: stale baked file still renders, flagged stale', () => {
+    const selection = selectSource(config({ maxAgeHours: 8 }), agedBy(30), NOW);
+    expect(selection.kind).toBe('baked-stale');
+    expect(selection.kind === 'baked-stale' && selection.ageMs).toBeGreaterThan(8 * HOUR);
+  });
+
+  it('branch 4: no baked file falls back to a runtime fetch', () => {
+    expect(selectSource(config(), null, NOW).kind).toBe('runtime');
+  });
+
+  it('mode=baked never networks, even with nothing baked', () => {
+    expect(selectSource(config({ mode: 'baked' }), null, NOW).kind).toBe('baked');
+  });
+
+  it('mode=baked never reports stale (it has no fallback to offer)', () => {
+    expect(selectSource(config({ mode: 'baked' }), agedBy(500), NOW).kind).toBe('baked');
+  });
+
+  it('mode=runtime ignores the baked file entirely', () => {
+    expect(selectSource(config({ mode: 'runtime' }), agedBy(1), NOW).kind).toBe('runtime');
+  });
+
+  it('mode=runtime wins even in dev with local data requested', () => {
+    const selection = selectSource(
+      config({ mode: 'runtime', isDev: true, useLocalSocrates: true }),
+      agedBy(1),
+      NOW,
+    );
+    expect(selection.kind).toBe('runtime');
+  });
+
+  it('an undated or unparseable baked file is usable but never stale', () => {
+    expect(selectSource(config(), { dataEpoch: null }, NOW).kind).toBe('baked');
+    expect(selectSource(config(), { dataEpoch: 'not-a-date' }, NOW).kind).toBe('baked');
+  });
+
+  it('production ignores useLocalSocrates (the dev bypass is dev-only)', () => {
+    const selection = selectSource(
+      config({ isDev: false, useLocalSocrates: true }),
+      agedBy(1),
+      NOW,
+    );
+    expect(selection.kind).toBe('baked');
+  });
+});
+
+describe('readSourceConfig', () => {
+  it('defaults to auto mode and an 8 hour max age', () => {
+    const parsed = readSourceConfig({}, false);
+    expect(parsed.mode).toBe('auto');
+    expect(parsed.maxAgeHours).toBe(DEFAULT_MAX_AGE_HOURS);
+    expect(parsed.useLocalSocrates).toBe(false);
+  });
+
+  it('reads each supported override', () => {
+    const parsed = readSourceConfig(
+      {
+        VITE_DATA_MODE: 'runtime',
+        VITE_MAX_DATA_AGE_HOURS: '3',
+        VITE_USE_LOCAL_SOCRATES: 'true',
+      },
+      true,
+    );
+    expect(parsed).toEqual({
+      mode: 'runtime',
+      maxAgeHours: 3,
+      isDev: true,
+      useLocalSocrates: true,
+    });
+  });
+
+  it('falls back to defaults on nonsense values', () => {
+    const parsed = readSourceConfig(
+      { VITE_DATA_MODE: 'wat', VITE_MAX_DATA_AGE_HOURS: '-5' },
+      false,
+    );
+    expect(parsed.mode).toBe('auto');
+    expect(parsed.maxAgeHours).toBe(DEFAULT_MAX_AGE_HOURS);
+  });
+});
+
+function bakedFixture(overrides: Partial<BakedSocrates> = {}): BakedSocrates {
+  return {
+    schemaVersion: 1,
+    generatedAt: '2026-07-28T00:00:00.000Z',
+    sourceUrl: 'https://celestrak.org/SOCRATES/sort-minRange.csv',
+    sourceLastModified: '2026-07-27T23:00:00.000Z',
+    socratesEpoch: null,
+    recordCount: 1,
+    conjunctions: [
+      {
+        noradId1: 25544,
+        name1: 'ISS (ZARYA)',
+        noradId2: 100001,
+        name2: 'TEST DEB',
+        tca: new Date('2026-07-29T01:02:03.000Z'),
+        minRange: 0.42,
+        relativeSpeed: 12.3,
+        maxProbability: 1e-4,
+        dse1: 1,
+        dse2: 2,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe('dataEpochOf', () => {
+  it('prefers socratesEpoch when present', () => {
+    const baked = bakedFixture({ socratesEpoch: '2026-07-26T00:00:00.000Z' });
+    expect(dataEpochOf(baked)).toBe('2026-07-26T00:00:00.000Z');
+  });
+
+  it('falls back to sourceLastModified', () => {
+    expect(dataEpochOf(bakedFixture())).toBe('2026-07-27T23:00:00.000Z');
+  });
+
+  it('is null when neither is known', () => {
+    expect(dataEpochOf(bakedFixture({ sourceLastModified: null }))).toBeNull();
+  });
+});
+
+describe('loadBaked', () => {
+  /** All HTTP here is mocked; no test may reach CelesTrak. */
+  function mockFetch(body: unknown, ok = true): typeof fetch {
+    return vi.fn(async () =>
+      Promise.resolve({
+        ok,
+        json: async () => Promise.resolve(body),
+      }),
+    ) as unknown as typeof fetch;
+  }
+
+  it('revives tca into a Date', async () => {
+    const wire = JSON.parse(JSON.stringify(bakedFixture())) as unknown;
+    const loaded = await loadBaked('/data/socrates.json', mockFetch(wire));
+    expect(loaded).not.toBeNull();
+    expect(loaded?.conjunctions[0]?.tca).toBeInstanceOf(Date);
+    expect(loaded?.conjunctions[0]?.tca.toISOString()).toBe('2026-07-29T01:02:03.000Z');
+  });
+
+  it('returns null for a missing file rather than throwing', async () => {
+    expect(await loadBaked('/data/socrates.json', mockFetch({}, false))).toBeNull();
+  });
+
+  it('returns null for a malformed or empty payload', async () => {
+    expect(await loadBaked('/x.json', mockFetch({ nope: true }))).toBeNull();
+    expect(
+      await loadBaked('/x.json', mockFetch(bakedFixture({ conjunctions: [] }))),
+    ).toBeNull();
+  });
+
+  it('returns null when the request throws (offline)', async () => {
+    const throwing = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    }) as unknown as typeof fetch;
+    expect(await loadBaked('/data/socrates.json', throwing)).toBeNull();
+  });
+});

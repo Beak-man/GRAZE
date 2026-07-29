@@ -2,3 +2,8 @@ node_modules/
 dist/
 *.tsbuildinfo
 .vite/
+
+# Build outputs, not source. A committed data file would mean every fork ships
+# with whatever conjunctions were current on the day of the last push.
+packages/conjunction-web/public/data/socrates.json
+.cache/

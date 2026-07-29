@@ -1,16 +1,29 @@
 import * as THREE from 'three';
-import { eciToThreeJs } from 'conjunction-core';
+import { applyMatrix3, eciToThreeJs, precessionMatrixJ2000ToDate } from 'conjunction-core';
 
 /**
  * Hipparcos starfield (stars.json, ESA Hipparcos catalog via NASA WorldWind,
- * Apache 2.0). Each star's equatorial coordinates (ra/dec, epoch J1991.25)
- * are converted to a direction on a fixed far shell, with visual magnitude
- * mapped to point size and opacity.
+ * Apache 2.0). Each star's equatorial coordinates (ra/dec) are converted to a
+ * direction on a fixed far shell, with visual magnitude mapped to point size
+ * and opacity.
  *
  * Unlike WorldWind's StarFieldProgram — whose scene is Earth-fixed and must
  * rotate stars by sidereal time (GMST) every frame — the GRAZE scene is
- * ECI-aligned, so the equatorial directions are already correct and static.
- * (Precession since J1991.25 is far below a pixel at these point sizes.)
+ * ECI-aligned, so no GMST rotation is applied to the stars. **That reasoning
+ * holds for the starfield only**: the globe carries geographic imagery and is
+ * correctly spun by GMST (see scene/earth.ts).
+ *
+ * The catalogue is ICRS, aligned to the J2000 mean equator and equinox to
+ * within ~25 mas, while SGP4 emits TEME — referred to the mean equinox *of
+ * date*. That gap is precession, not a catalogue-epoch effect, and it is not
+ * negligible: ~1337" ≈ 0.371° for epoch 2026, i.e. ~9 px at the scene's 45°
+ * FOV at 1080p. It is corrected below by precessing each direction from J2000
+ * to the mean equator/equinox of date.
+ *
+ * Note the two separate epochs, which are easy to conflate: J1991.25 is the
+ * Hipparcos mean *observation* epoch and governs proper motion only (~3" over
+ * three decades for bright stars, ignored); the *frame* equinox is J2000 and
+ * is what precession is measured from.
  */
 
 const STAR_SHELL_RADIUS_UNITS = 900;
@@ -64,16 +77,19 @@ function findColumn(catalog: StarCatalog, name: string): number {
   return index;
 }
 
-export async function createStarfield(url = '/stars.json'): Promise<THREE.Points> {
+export async function createStarfield(
+  url = '/stars.json',
+  epoch = new Date(),
+): Promise<THREE.Points> {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Star catalog request failed: ${response.status} ${response.statusText}`);
   }
   const catalog = (await response.json()) as StarCatalog;
-  return buildStarPoints(catalog);
+  return buildStarPoints(catalog, epoch);
 }
 
-export function buildStarPoints(catalog: StarCatalog): THREE.Points {
+export function buildStarPoints(catalog: StarCatalog, epoch = new Date()): THREE.Points {
   const vmagIndex = findColumn(catalog, 'vmag');
   const raIndex = findColumn(catalog, 'ra');
   const decIndex = findColumn(catalog, 'dec');
@@ -103,19 +119,27 @@ export function buildStarPoints(catalog: StarCatalog): THREE.Points {
   const alphas = new Float32Array(stars.length);
   const pixelRatio = typeof window === 'undefined' ? 1 : window.devicePixelRatio;
   const shellKm = STAR_SHELL_RADIUS_UNITS * KM_PER_SCENE_UNIT;
+  // Computed once for the whole catalogue, not per frame: the angles drift by
+  // only ~50"/yr, so a per-session constant is orders of magnitude tighter than
+  // the ~1 px the rendering can resolve. Scrubbing the time animator across
+  // days or weeks does not move it measurably either.
+  const precession = precessionMatrixJ2000ToDate(epoch);
 
   stars.forEach((star, i) => {
     const vmag = star[vmagIndex] ?? 0;
     const ra = (star[raIndex] ?? 0) * DEG_TO_RAD;
     const dec = (star[decIndex] ?? 0) * DEG_TO_RAD;
 
-    // Equatorial direction in the ECI frame, pushed to the far shell and
-    // converted to scene axes through the shared ECI→scene mapping.
-    const scenePosition = eciToThreeJs({
-      x: shellKm * Math.cos(dec) * Math.cos(ra),
-      y: shellKm * Math.cos(dec) * Math.sin(ra),
-      z: shellKm * Math.sin(dec),
-    });
+    // Catalogue direction (ICRS ≈ J2000 mean equator/equinox), precessed to the
+    // mean equator/equinox of date to match SGP4's TEME, then pushed to the far
+    // shell and converted to scene axes through the shared ECI→scene mapping.
+    const scenePosition = eciToThreeJs(
+      applyMatrix3(precession, {
+        x: shellKm * Math.cos(dec) * Math.cos(ra),
+        y: shellKm * Math.cos(dec) * Math.sin(ra),
+        z: shellKm * Math.sin(dec),
+      }),
+    );
     positions[i * 3] = scenePosition.x;
     positions[i * 3 + 1] = scenePosition.y;
     positions[i * 3 + 2] = scenePosition.z;

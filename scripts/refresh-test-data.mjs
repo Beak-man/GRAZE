@@ -20,9 +20,23 @@
  * Env overrides: ROWS (default 10), MAX_CANDIDATES (default 40), BASE origin.
  */
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
+
+// Reuse conjunction-core's definition of "same orbit solution" rather than
+// duplicating the field list — the script and the app must agree on it.
+const CORE_ENTRY = path.join(ROOT, 'packages', 'conjunction-core', 'dist', 'index.js');
+if (!existsSync(CORE_ENTRY)) {
+  console.error(
+    `conjunction-core is not built (${path.relative(ROOT, CORE_ENTRY)} missing). ` +
+      'Run "npm run build:core" first, then rerun this script.',
+  );
+  process.exit(1);
+}
+const { sharesOrbitSolution } = await import(pathToFileURL(CORE_ENTRY).href);
 const CSV_OUTPUTS = [
   path.join(ROOT, 'test-data', 'socrates-sample.csv'),
   path.join(ROOT, 'packages', 'conjunction-web', 'public', 'test-data', 'socrates-sample.csv'),
@@ -232,13 +246,24 @@ for (const line of dataLines.slice(0, MAX_CANDIDATES)) {
   const id1 = Number(fields[idIndex1]);
   const id2 = Number(fields[idIndex2]);
   const [gp1, gp2] = [await getGp(id1), await getGp(id2)];
-  if (gp1 !== null && gp2 !== null) {
-    keptRows.push(line);
-    referenced.add(id1);
-    referenced.add(id2);
-  } else {
+  if (gp1 === null || gp2 === null) {
     console.warn(`  skip row ${id1} × ${id2}: GP unavailable`);
+    continue;
   }
+  // CelesTrak sometimes publishes ONE orbit solution for several pieces of a
+  // recent launch. SGP4 then propagates both to the same point, so the row
+  // renders as a single track with a meaningless 0 m miss — useless as sample
+  // data. Drop it here rather than spending a slot on it.
+  if (sharesOrbitSolution(gp1[0], gp2[0])) {
+    console.warn(
+      `  skip row ${id1} × ${id2}: identical orbit solution upstream ` +
+        `(${gp1[0].OBJECT_ID} / ${gp2[0].OBJECT_ID}) — would propagate to 0 m`,
+    );
+    continue;
+  }
+  keptRows.push(line);
+  referenced.add(id1);
+  referenced.add(id2);
 }
 
 if (keptRows.length < ROWS) {

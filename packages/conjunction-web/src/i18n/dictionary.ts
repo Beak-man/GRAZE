@@ -24,6 +24,10 @@ export interface Dictionary {
     readonly disclaimer: string;
     readonly aboutTip: string;
     readonly loading: string;
+    /** Shown on the startup overlay while the globe textures download. */
+    readonly loadingAssets: string;
+    /** Same, once at least one texture has landed — real feedback on slow links. */
+    readonly loadingAssetsProgress: (loaded: number, total: number) => string;
   };
   readonly language: {
     readonly label: string;
@@ -67,7 +71,22 @@ export interface Dictionary {
     readonly playPause: string;
     readonly playbackSpeed: string;
   };
+  readonly dataBanner: {
+    /** Stale-data notice; `age` is already localized via formatAge. */
+    readonly stale: (age: string) => string;
+    readonly fetchLatest: string;
+    readonly fetching: string;
+    readonly dismiss: string;
+    readonly fetchFailed: string;
+  };
+  readonly age: {
+    readonly justNow: string;
+    readonly hours: (n: number) => string;
+    readonly days: (n: number) => string;
+  };
   readonly infoPanel: {
+    readonly dataEpoch: string;
+    readonly dataEpochUnknown: string;
     readonly placeholder: string;
     readonly tca: string;
     readonly missDistance: string;
@@ -88,6 +107,7 @@ export interface Dictionary {
     readonly showing: (name1: string, name2: string) => string;
     readonly gpUnavailable: string;
     readonly propagationFailed: string;
+    readonly sharedOrbitSolution: string;
     readonly fetchingSocrates: string;
     readonly loadingLocal: string;
     readonly couldNotLoad: string;
@@ -103,6 +123,12 @@ export interface Dictionary {
     readonly couldNotReachSocrates: (detail: string) => string;
     readonly couldNotLoadLocalData: (detail: string) => string;
     readonly noBundledGp: (noradId: number) => string;
+    /** Upstream publishes one orbit solution for both objects — see sharesOrbitSolution. */
+    readonly sharedOrbitSolution: (
+      objectId1: string,
+      objectId2: string,
+      socratesRange: string,
+    ) => string;
     readonly corsHelp: string;
   };
   readonly buttons: {
@@ -124,6 +150,8 @@ const en: Dictionary = {
       'satellite conjunctions from CelesTrak SOCRATES data. This is an early beta; see the ' +
       'disclaimer above. Source, issues, and license are on GitHub (linked in the footer).',
     loading: 'Loading…',
+    loadingAssets: 'Loading map imagery…',
+    loadingAssetsProgress: (loaded, total) => `Loading map imagery… ${loaded} of ${total}`,
   },
   language: {
     label: 'Language',
@@ -177,7 +205,21 @@ const en: Dictionary = {
     playPause: 'Play/Pause',
     playbackSpeed: 'Playback speed',
   },
+  dataBanner: {
+    stale: (age) => `Conjunction data is ${age} old`,
+    fetchLatest: 'Fetch latest',
+    fetching: 'Fetching…',
+    dismiss: 'Dismiss',
+    fetchFailed: 'Could not fetch the latest data. Showing the previous data.',
+  },
+  age: {
+    justNow: 'less than an hour',
+    hours: (n) => `${n} hour${n === 1 ? '' : 's'}`,
+    days: (n) => `${n} day${n === 1 ? '' : 's'}`,
+  },
   infoPanel: {
+    dataEpoch: 'Data epoch',
+    dataEpochUnknown: 'unknown',
     placeholder: 'Select a conjunction to analyze it.',
     tca: 'TCA',
     missDistance: 'Miss distance',
@@ -198,6 +240,7 @@ const en: Dictionary = {
     showing: (name1, name2) => `Showing ${name1} × ${name2}`,
     gpUnavailable: 'GP data unavailable.',
     propagationFailed: 'Propagation failed.',
+    sharedOrbitSolution: 'Objects share one orbit solution.',
     fetchingSocrates: 'Fetching SOCRATES conjunction data…',
     loadingLocal: 'Loading bundled test data…',
     couldNotLoad: 'Could not load conjunction data.',
@@ -222,6 +265,12 @@ const en: Dictionary = {
       `No bundled GP data for NORAD ${noradId}. This object is in the test snapshot ` +
       'but has no test-data/gp file — run "npm run refresh:test-data", or use live data ' +
       'with VITE_USE_LIVE=true.',
+    sharedOrbitSolution: (objectId1, objectId2, socratesRange) =>
+      'CelesTrak publishes a single shared orbit solution for these two objects ' +
+      `(${objectId1} and ${objectId2} are pieces of the same launch, not yet individually ` +
+      'resolved), so SGP4 propagates them to the same point and they cannot be ' +
+      `separated here. SOCRATES reports ${socratesRange} using better-resolved orbits. ` +
+      'Visualization skipped.',
     corsHelp:
       'If this keeps happening, the browser is likely blocked by CORS or a network ' +
       'failure when calling CelesTrak directly. Deploy the bundled Cloudflare Worker ' +
@@ -248,6 +297,8 @@ const es: Dictionary = {
       'consulta el aviso de arriba. El código fuente, rastreador de incidencias y licencia están en GitHub ' +
       '(enlazado en el pie de página).',
     loading: 'Cargando…',
+    loadingAssets: 'Cargando imágenes del mapa…',
+    loadingAssetsProgress: (loaded, total) => `Cargando imágenes del mapa… ${loaded} de ${total}`,
   },
   language: {
     label: 'Idioma',
@@ -301,7 +352,21 @@ const es: Dictionary = {
     playPause: 'Reproducir/Pausar',
     playbackSpeed: 'Velocidad de reproducción',
   },
+  dataBanner: {
+    stale: (age) => `Los datos de conjunciones tienen ${age} de antigüedad`,
+    fetchLatest: 'Obtener los más recientes',
+    fetching: 'Obteniendo…',
+    dismiss: 'Descartar',
+    fetchFailed: 'No se pudieron obtener los datos más recientes. Se muestran los anteriores.',
+  },
+  age: {
+    justNow: 'menos de una hora',
+    hours: (n) => `${n} hora${n === 1 ? '' : 's'}`,
+    days: (n) => `${n} día${n === 1 ? '' : 's'}`,
+  },
   infoPanel: {
+    dataEpoch: 'Época de los datos',
+    dataEpochUnknown: 'desconocida',
     placeholder: 'Selecciona una conjunción para analizarla.',
     tca: 'TCA',
     missDistance: 'Distancia de cruce',
@@ -322,6 +387,7 @@ const es: Dictionary = {
     showing: (name1, name2) => `Mostrando ${name1} × ${name2}`,
     gpUnavailable: 'Datos GP no disponibles.',
     propagationFailed: 'Falló la propagación.',
+    sharedOrbitSolution: 'Los objetos comparten una solución orbital.',
     fetchingSocrates: 'Obteniendo datos de conjunciones de SOCRATES…',
     loadingLocal: 'Cargando datos de prueba incluidos…',
     couldNotLoad: 'No se pudieron cargar los datos de conjunciones.',
@@ -346,6 +412,12 @@ const es: Dictionary = {
       `No hay datos GP incluidos para el NORAD ${noradId}. Este objeto está en la instantánea de ` +
       'prueba pero no tiene archivo test-data/gp — ejecuta "npm run refresh:test-data", o usa ' +
       'datos en vivo con VITE_USE_LIVE=true.',
+    sharedOrbitSolution: (objectId1, objectId2, socratesRange) =>
+      'CelesTrak publica una única solución orbital compartida para estos dos objetos ' +
+      `(${objectId1} y ${objectId2} son piezas del mismo lanzamiento, aún sin resolver por ` +
+      'separado), por lo que SGP4 los propaga al mismo punto y no pueden distinguirse ' +
+      `aquí. SOCRATES informa ${socratesRange} usando órbitas mejor resueltas. ` +
+      'Se omitió la visualización.',
     corsHelp:
       'Si esto sigue ocurriendo, es probable que el navegador esté bloqueado por CORS o por un ' +
       'fallo de red al llamar a CelesTrak directamente. Despliega el Cloudflare Worker incluido ' +

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { computeCloseApproach, eciToThreeJs, propagateOrbit } from '../src/propagator.js';
-import type { OrbitalElements } from '../src/types.js';
+import {
+  computeCloseApproach,
+  eciToThreeJs,
+  propagateOrbit,
+  subSatellitePoint,
+} from '../src/propagator.js';
+import { getEarthRotationRadians } from '../src/analysis.js';
+import type { EciVector, OrbitalElements } from '../src/types.js';
 
 /** ISS-like OMM element set (values representative of the real orbit). */
 const ISS_OMM: OrbitalElements = {
@@ -120,5 +126,107 @@ describe('eciToThreeJs', () => {
       y: -2,
       z: -1,
     });
+  });
+});
+
+/** Smallest absolute difference between two longitudes, across the ±180° seam. */
+function longitudeDelta(a: number, b: number): number {
+  const raw = Math.abs(a - b);
+  return raw > 180 ? 360 - raw : raw;
+}
+
+/**
+ * These are the tests that prove a satellite is drawn over the ground track it
+ * actually flies. subSatellitePoint inverts the render transform (scene axis
+ * mapping + the globe's GMST spin); propagateOrbit reports latitude/longitude
+ * via satellite.js eciToGeodetic. The two are independent paths, so agreement
+ * means the rendered geography is right — and any regression in the axis
+ * mapping, rotation direction, or GMST offset breaks it loudly.
+ */
+describe('subSatellitePoint', () => {
+  const points = propagateOrbit(ISS_OMM, EPOCH, new Date(EPOCH.getTime() + NINETY_MINUTES_MS), 60);
+
+  it('matches the geodetic longitude from satellite.js to floating-point precision', () => {
+    // Oblateness does not affect longitude, so this is an exact cross-check.
+    // Measured worst case ≈ 6e-14°; 1e-9° leaves margin while still catching
+    // any real frame error (a sign flip is tens of degrees — see below).
+    for (const point of points) {
+      const derived = subSatellitePoint(point.positionEci, point.timestamp);
+      expect(longitudeDelta(derived.longitude, point.longitude)).toBeLessThan(1e-9);
+    }
+  });
+
+  it('matches the geocentric latitude exactly and the geodetic one within oblateness', () => {
+    for (const point of points) {
+      const derived = subSatellitePoint(point.positionEci, point.timestamp);
+      const r = Math.hypot(point.positionEci.x, point.positionEci.y, point.positionEci.z);
+      const geocentric = (Math.asin(point.positionEci.z / r) * 180) / Math.PI;
+      expect(Math.abs(derived.latitude - geocentric)).toBeLessThan(1e-9);
+      // Geodetic latitude differs from geocentric by ≤ ~0.2° at these latitudes.
+      expect(Math.abs(derived.latitude - point.latitude)).toBeLessThan(0.25);
+    }
+  });
+
+  it('would fail loudly if the globe spun the wrong way', () => {
+    // Guards against the test passing vacuously: inverting with -theta instead
+    // of +theta (the classic sign regression) must put the satellite far from
+    // its true longitude, not somewhere subtly off.
+    const wrongSign = (positionEci: EciVector, date: Date): number => {
+      const scene = eciToThreeJs(positionEci);
+      const theta = -getEarthRotationRadians(date);
+      const cos = Math.cos(theta);
+      const sin = Math.sin(theta);
+      return (
+        (Math.atan2(-(scene.x * sin + scene.z * cos), scene.x * cos - scene.z * sin) * 180) /
+        Math.PI
+      );
+    };
+    const worst = Math.max(
+      ...points.map((point) =>
+        longitudeDelta(wrongSign(point.positionEci, point.timestamp), point.longitude),
+      ),
+    );
+    expect(worst).toBeGreaterThan(10);
+  });
+});
+
+describe('subSatellitePoint for a geostationary orbit', () => {
+  // A GEO object circles the ECI frame once per sidereal day, exactly matching
+  // Earth's rotation — so its sub-satellite longitude must stay put. This
+  // catches sign errors and gross GMST rate errors (a sign flip drifts ~30°/h).
+  // It does not sharply discriminate sidereal vs solar day (~1°/day); the
+  // sidereal-day periodicity test in analysis.test.ts covers that.
+  const GEO_OMM: OrbitalElements = {
+    ...ISS_OMM,
+    OBJECT_NAME: 'SYNTHETIC GEO',
+    NORAD_CAT_ID: 100002,
+    MEAN_MOTION: 1.0027, // sidereal revolutions per day
+    ECCENTRICITY: 0.0001,
+    INCLINATION: 0.05,
+    ARG_OF_PERICENTER: 0,
+    RA_OF_ASC_NODE: 0,
+    MEAN_ANOMALY: 0,
+  };
+  const points = propagateOrbit(GEO_OMM, EPOCH, new Date(EPOCH.getTime() + 12 * 3600_000), 600);
+  const derived = points.map((point) => subSatellitePoint(point.positionEci, point.timestamp));
+
+  it('sits at geostationary altitude', () => {
+    for (const point of points) {
+      expect(point.altitude).toBeGreaterThan(35_700);
+      expect(point.altitude).toBeLessThan(35_900);
+    }
+  });
+
+  it('holds a near-constant longitude over 12 hours', () => {
+    const longitudes = derived.map((point) => point.longitude);
+    // Measured span ≈ 0.013°; a wrong rotation direction would sweep ~360°.
+    expect(Math.max(...longitudes) - Math.min(...longitudes)).toBeLessThan(0.5);
+  });
+
+  it('stays over the equator', () => {
+    // Measured max ≈ 0.072°, bounded by the 0.05° inclination.
+    for (const point of derived) {
+      expect(Math.abs(point.latitude)).toBeLessThan(0.5);
+    }
   });
 });

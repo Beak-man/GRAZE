@@ -4,6 +4,32 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GRAZE — Conjunction Visualizer</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta
+      name="description"
+      content="GRAZE replays upcoming close approaches between orbiting objects on an interactive 3D globe, using public CelesTrak SOCRATES data and SGP4 propagation. Educational use only."
+    />
+    <!--
+      Open Graph / Twitter cards for shared links. og:url and og:image must be
+      absolute, so they carry the deployment origin — update both if GRAZE is
+      served from a domain other than the one below. og:image currently points at
+      the app screenshot hosted on GitHub (the same one used in README.md); drop a
+      JPG into public/ and repoint it here to self-host instead.
+    -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="GRAZE" />
+    <meta property="og:title" content="GRAZE — Satellite Conjunction Visualizer" />
+    <meta
+      property="og:description"
+      content="Replay upcoming satellite close approaches on an interactive 3D globe. Public CelesTrak SOCRATES data, SGP4 propagation. Educational use only."
+    />
+    <meta property="og:url" content="https://graze.delcastillohoffman.com/" />
+    <meta
+      property="og:image"
+      content="https://github.com/user-attachments/assets/ad311f7d-bf1c-4583-bd1e-ec0a0eeece55"
+    />
+    <meta property="og:image:alt" content="GRAZE showing two orbits converging above Earth" />
+    <meta name="twitter:card" content="summary_large_image" />
     <style>
       :root {
         color-scheme: dark;
@@ -189,6 +215,46 @@
         font-family: var(--mono);
         font-size: 12px;
       }
+      #info-panel { display: flex; flex-direction: column; }
+      #info-panel-body { flex: 1; min-height: 0; }
+      #data-timestamps {
+        flex: none;
+        margin-top: 8px;
+        padding-top: 6px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      /* ---------- Stale data banner ---------- */
+      #data-banner {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 14px;
+        background: #2a2410;
+        border-bottom: 1px solid #5c521a;
+        color: #ffe9a3;
+        font-size: 12px;
+      }
+      #data-banner button {
+        background: var(--panel-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 3px 10px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #data-banner button:hover:not(:disabled) { border-color: var(--accent1); }
+      #data-banner button:disabled { opacity: 0.6; cursor: default; }
+      #data-banner-dismiss {
+        margin-left: auto;
+        padding: 3px 9px;
+        line-height: 1;
+      }
+
       #info-panel h2 {
         margin: 0 0 6px;
         font-size: 13px;
@@ -285,6 +351,51 @@
       }
       .hidden { display: none !important; }
 
+      /* ---------- Loading overlay ---------- */
+      /*
+        Lives in the static markup (not created by JS) so it paints as soon as
+        the HTML arrives — the whole point is covering the wait while the JS
+        bundle and the ~7.7 MB of textures download on a slow connection.
+      */
+      #loading-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 200;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg);
+        transition: opacity 0.45s ease;
+      }
+      #loading-overlay.fading { opacity: 0; pointer-events: none; }
+      #loading-overlay .loader-inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 18px;
+        padding: 0 24px;
+        text-align: center;
+      }
+      #loading-overlay .loader-mark {
+        font-size: 26px;
+        letter-spacing: 6px;
+        color: var(--text);
+      }
+      #loading-overlay .loader-mark span { color: var(--accent1); }
+      #loading-overlay .loader-ring {
+        width: 40px;
+        height: 40px;
+        border: 3px solid var(--border);
+        border-top-color: var(--accent1);
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      #loading-text { color: var(--muted); font-size: 12px; }
+      @media (prefers-reduced-motion: reduce) {
+        /* Keep the text as the progress cue rather than spinning. */
+        #loading-overlay .loader-ring { animation: none; }
+      }
+
       /* ---------- Tooltips ---------- */
       .tip-icon {
         display: inline-flex;
@@ -334,9 +445,44 @@
     </style>
   </head>
   <body>
+    <div id="loading-overlay">
+      <div class="loader-inner">
+        <div class="loader-mark">GR<span>A</span>ZE</div>
+        <div class="loader-ring"></div>
+        <div id="loading-text">Loading map imagery…</div>
+      </div>
+    </div>
+    <script>
+      // Deliberately inline and duplicated from src/i18n/translator.ts: this has
+      // to pick a language before the JS bundle has downloaded, which on a slow
+      // connection is exactly the wait the overlay exists to cover. Same rule as
+      // the app (saved choice wins, else navigator.language), just the one string.
+      (function () {
+        try {
+          var saved = localStorage.getItem('graze:lang');
+          var lang = saved === 'en' || saved === 'es'
+            ? saved
+            : (navigator.language || 'en').toLowerCase().indexOf('es') === 0
+              ? 'es'
+              : 'en';
+          document.documentElement.lang = lang;
+          if (lang === 'es') {
+            document.getElementById('loading-text').textContent =
+              'Cargando imágenes del mapa…';
+          }
+        } catch (e) {
+          /* Storage blocked or DOM not ready — the English default already shows. */
+        }
+      })();
+    </script>
     <div id="disclaimer">
       ⚠ GRAZE uses publicly available GP/TLE data with SGP4 propagation.
       For educational and awareness purposes only — not for operational conjunction assessment.
+    </div>
+    <div id="data-banner" class="hidden">
+      <span id="data-banner-text"></span>
+      <button type="button" id="data-banner-fetch"></button>
+      <button type="button" id="data-banner-dismiss" aria-label="Dismiss">×</button>
     </div>
     <div id="app">
       <aside id="sidebar">
@@ -387,7 +533,15 @@
         <div id="table-container">
           <table id="conjunctions"></table>
         </div>
-        <section id="info-panel">Select a conjunction to analyze it.</section>
+        <section id="info-panel">
+          <div id="info-panel-body">Select a conjunction to analyze it.</div>
+          <!--
+            Data provenance, always visible and outside #info-panel-body so the
+            dynamic content can be replaced without wiping it. The open item to
+            surface GP element-set age belongs here as another row.
+          -->
+          <div id="data-timestamps"><span id="data-epoch"></span></div>
+        </section>
         <div id="footer">
           <span id="refresh-indicator" class="spinner hidden"></span>
           <span id="data-as-of">Data as of: —</span>

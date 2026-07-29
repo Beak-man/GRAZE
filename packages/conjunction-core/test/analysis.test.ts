@@ -5,6 +5,7 @@ import {
   getEarthRotationRadians,
   getSunDirectionEci,
   interpolateStateAt,
+  sharesOrbitSolution,
   summarizeOrbit,
 } from '../src/analysis.js';
 import { classifyObjectType } from '../src/socrates.js';
@@ -170,5 +171,74 @@ describe('interpolateStateAt', () => {
 
   it('returns null for an empty orbit', () => {
     expect(interpolateStateAt([], new Date(0))).toBeNull();
+  });
+});
+
+describe('sharesOrbitSolution', () => {
+  /**
+   * Real values from CelesTrak's public GP endpoint on 2026-07-27: NORAD 67689
+   * (2026-024A, "PRC TEST SPACECRAFT 4") and 69673 (2026-024H, "CZ-2F DEB")
+   * are two pieces of one launch published with the *same* orbit solution.
+   * Only identity and bookkeeping fields differ.
+   */
+  const PIECE_A: OrbitalElements = {
+    OBJECT_NAME: 'PRC TEST SPACECRAFT 4',
+    OBJECT_ID: '2026-024A',
+    EPOCH: '2026-07-27T23:04:00.103584',
+    MEAN_MOTION: 14.91844734,
+    ECCENTRICITY: 0.00047138,
+    INCLINATION: 49.9944,
+    RA_OF_ASC_NODE: 84.325,
+    ARG_OF_PERICENTER: 191.4754,
+    MEAN_ANOMALY: 168.6081,
+    EPHEMERIS_TYPE: 0,
+    CLASSIFICATION_TYPE: 'U',
+    NORAD_CAT_ID: 67689,
+    ELEMENT_SET_NO: 999,
+    REV_AT_EPOCH: 2552,
+    BSTAR: 3.6361674e-5,
+    MEAN_MOTION_DOT: 1.27e-6,
+    MEAN_MOTION_DDOT: 0,
+  };
+  const PIECE_H: OrbitalElements = {
+    ...PIECE_A,
+    OBJECT_NAME: 'CZ-2F DEB',
+    OBJECT_ID: '2026-024H',
+    NORAD_CAT_ID: 69673,
+    REV_AT_EPOCH: 2598,
+  };
+
+  it('detects the real shared-solution pair', () => {
+    expect(sharesOrbitSolution(PIECE_A, PIECE_H)).toBe(true);
+  });
+
+  it('ignores identity and bookkeeping differences', () => {
+    // Exactly the four fields that differ upstream must not affect the verdict.
+    expect(sharesOrbitSolution(PIECE_A, { ...PIECE_A, NORAD_CAT_ID: 1 })).toBe(true);
+    expect(sharesOrbitSolution(PIECE_A, { ...PIECE_A, OBJECT_NAME: 'OTHER' })).toBe(true);
+    expect(sharesOrbitSolution(PIECE_A, { ...PIECE_A, OBJECT_ID: '1999-001Z' })).toBe(true);
+    expect(sharesOrbitSolution(PIECE_A, { ...PIECE_A, REV_AT_EPOCH: 1 })).toBe(true);
+  });
+
+  it('is false when any propagated field differs, however slightly', () => {
+    const fields = [
+      ['EPOCH', '2026-07-27T23:04:00.103585'],
+      ['MEAN_MOTION', 14.91844735],
+      ['ECCENTRICITY', 0.00047139],
+      ['INCLINATION', 49.9945],
+      ['RA_OF_ASC_NODE', 84.326],
+      ['ARG_OF_PERICENTER', 191.4755],
+      ['MEAN_ANOMALY', 168.6082],
+      ['BSTAR', 3.6361675e-5],
+      ['MEAN_MOTION_DOT', 1.28e-6],
+      ['MEAN_MOTION_DDOT', 1e-9],
+    ] as const;
+    for (const [field, value] of fields) {
+      expect(sharesOrbitSolution(PIECE_A, { ...PIECE_A, [field]: value })).toBe(false);
+    }
+  });
+
+  it('is true for an element set compared with itself', () => {
+    expect(sharesOrbitSolution(PIECE_A, PIECE_A)).toBe(true);
   });
 });

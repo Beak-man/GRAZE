@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatAge,
   formatCountdown,
   formatKm,
   formatMinutes,
@@ -8,6 +9,32 @@ import {
   formatSpeed,
   formatTca,
 } from '../src/format.js';
+
+const AGE_STRINGS = {
+  justNow: 'less than an hour',
+  hours: (n: number) => `${n} hour${n === 1 ? '' : 's'}`,
+  days: (n: number) => `${n} day${n === 1 ? '' : 's'}`,
+};
+
+describe('formatAge', () => {
+  const HOUR = 3_600_000;
+
+  it('collapses anything under an hour', () => {
+    expect(formatAge(0, AGE_STRINGS)).toBe('less than an hour');
+    expect(formatAge(59 * 60_000, AGE_STRINGS)).toBe('less than an hour');
+  });
+
+  it('reports hours below two days', () => {
+    expect(formatAge(HOUR, AGE_STRINGS)).toBe('1 hour');
+    expect(formatAge(9 * HOUR, AGE_STRINGS)).toBe('9 hours');
+    expect(formatAge(47 * HOUR, AGE_STRINGS)).toBe('47 hours');
+  });
+
+  it('switches to days at 48 hours', () => {
+    expect(formatAge(48 * HOUR, AGE_STRINGS)).toBe('2 days');
+    expect(formatAge(30 * 24 * HOUR, AGE_STRINGS)).toBe('30 days');
+  });
+});
 
 describe('formatRange', () => {
   it('uses meters below 1 km', () => {

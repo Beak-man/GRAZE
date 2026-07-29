@@ -10,6 +10,13 @@ export interface FetchConjunctionsOptions {
    * browser to go through a same-origin dev-server proxy.
    */
   baseUrl?: string;
+  /**
+   * Receives the upstream response metadata, so a caller can display when the
+   * data itself was published rather than when it happened to be fetched.
+   * Optional and non-breaking; `lastModified` is null when the server omits
+   * the header.
+   */
+  onMeta?: (meta: { lastModified: Date | null }) => void;
 }
 
 const DEFAULT_BASE_URL = 'https://celestrak.org';
@@ -45,11 +52,16 @@ const SORT_FILES = {
 export async function fetchConjunctions(
   options: FetchConjunctionsOptions = {},
 ): Promise<ConjunctionEvent[]> {
-  const { maxResults = 100, sortBy = 'MINRANGE', baseUrl = DEFAULT_BASE_URL } = options;
+  const { maxResults = 100, sortBy = 'MINRANGE', baseUrl = DEFAULT_BASE_URL, onMeta } = options;
   const url = `${baseUrl}/SOCRATES/${SORT_FILES[sortBy]}`;
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`SOCRATES request failed: ${response.status} ${response.statusText}`);
+  }
+  if (onMeta !== undefined) {
+    const header = response.headers?.get('last-modified') ?? null;
+    const parsed = header === null ? null : new Date(header);
+    onMeta({ lastModified: parsed !== null && !Number.isNaN(parsed.getTime()) ? parsed : null });
   }
   return parseSocratesCsv(await response.text(), maxResults);
 }

@@ -47,3 +47,25 @@ export function formatKm(km: number): string {
 export function formatMinutes(minutes: number): string {
   return `${minutes.toFixed(1)} min`;
 }
+
+/** Localized pieces needed by formatAge, so this module stays i18n-agnostic. */
+export interface AgeStrings {
+  justNow: string;
+  hours: (n: number) => string;
+  days: (n: number) => string;
+}
+
+/**
+ * Human-readable age of a timestamp, e.g. "3 days" / "5 hours". Used by both
+ * the data-epoch line and the stale-data banner so they never disagree.
+ */
+export function formatAge(ageMs: number, strings: AgeStrings): string {
+  const hours = ageMs / 3_600_000;
+  if (hours < 1) {
+    return strings.justNow;
+  }
+  if (hours < 48) {
+    return strings.hours(Math.round(hours));
+  }
+  return strings.days(Math.round(hours / 24));
+}
