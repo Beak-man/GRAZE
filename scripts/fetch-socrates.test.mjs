@@ -123,14 +123,14 @@ describe('buildPayload', () => {
     maxProb: { url: 'u/max', lastModified: '2026-07-28T23:00:00.000Z', recordCount: 2 },
   };
 
-  it('produces the documented metadata shape at schemaVersion 2', () => {
+  it('produces the documented metadata shape at the current schemaVersion', () => {
     const p = buildPayload({
       perSource: [['minRange', [ev(1, 2, '2026-07-29T01:00:00Z')]]],
       sourceMeta,
       estimatedTotalRecords: 149500,
       now: new Date('2026-07-29T00:00:00Z'),
     });
-    expect(p.schemaVersion).toBe(2);
+    expect(p.schemaVersion).toBe(3);
     expect(p.generatedAt).toBe('2026-07-29T00:00:00.000Z');
     expect(p.estimatedTotalRecords).toBe(149500);
     expect(p.sources).toEqual(sourceMeta);
@@ -398,7 +398,7 @@ describe('main end-to-end with mocked HTTP', () => {
     expect(await main(mainOptions(fetchImpl))).toBe(0);
 
     const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
-    expect(written.schemaVersion).toBe(2);
+    expect(written.schemaVersion).toBe(3);
     // Both files return the same CSV here, so the union dedups to 2 records.
     expect(written.recordCount).toBe(2);
     expect(written.conjunctions[0].sources.sort()).toEqual(['maxProb', 'minRange']);
@@ -761,5 +761,42 @@ describe('three independently-validated sources', () => {
     const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
     // Regimes survived the 304 by being read back out of the previous payload.
     expect(written.conjunctions[0].regime1).toBe('LEO');
+  });
+});
+
+describe('schema upgrades force a rebuild', () => {
+  /**
+   * Regression: the "both sources unchanged" shortcut returned early before the
+   * regime step, so a payload written by an older schema was served unchanged
+   * forever — SOCRATES had not changed, so the shortcut kept firing. A version
+   * bump must defeat it.
+   */
+  it('rebuilds when the cached payload predates the current schema', async () => {
+    const out = path.join(workDir, 'socrates.json');
+    const seed = async (url) =>
+      url.includes('satcat')
+        ? { status: 200, ok: true, text: async () => SATCAT_STUB, headers: new Headers({ etag: '"s"' }) }
+        : { status: 206, ok: false, text: async () => CSV, headers: new Headers({ etag: '"c"' }) };
+    await main(mainOptions(seed));
+
+    // Downgrade the written payload to an older schema, as an upgrade would find it.
+    const stale = JSON.parse(await readFile(out, 'utf8'));
+    stale.schemaVersion = 2;
+    for (const c of stale.conjunctions) {
+      delete c.regime1;
+      delete c.regime2;
+    }
+    await writeFile(out, JSON.stringify(stale));
+
+    // Nothing upstream changed.
+    const allStale = async (url) =>
+      url.includes('satcat')
+        ? { status: 304, ok: false, headers: new Headers() }
+        : { status: 304, ok: false, headers: new Headers() };
+    expect(await main(mainOptions(allStale))).toBe(0);
+
+    const after = JSON.parse(await readFile(out, 'utf8'));
+    expect(after.schemaVersion).toBe(3);
+    expect(after.conjunctions[0]).toHaveProperty('regime1');
   });
 });

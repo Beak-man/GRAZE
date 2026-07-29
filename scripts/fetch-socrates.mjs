@@ -51,8 +51,16 @@ const CORE_ENTRY = path.join(ROOT, 'packages', 'conjunction-core', 'dist', 'inde
 
 const DEFAULT_BASE_URL = 'https://celestrak.org/SOCRATES';
 const REPO_URL = 'https://github.com/Beak-man/GRAZE';
-/** Bumped from 1: records gained `sources`, and the payload gained per-file metadata. */
-const SCHEMA_VERSION = 2;
+/**
+ * 1 -> 2: records gained `sources`, payload gained per-file metadata.
+ * 2 -> 3: records gained baked `regime1`/`regime2` from SATCAT.
+ *
+ * The "nothing changed, reuse the file" shortcut below is gated on this, so a
+ * bump forces a rebuild. Without that gate the shortcut happily served a
+ * payload predating the new fields forever, because SOCRATES itself had not
+ * changed — which is exactly what happened on the first regime deploy.
+ */
+const SCHEMA_VERSION = 3;
 const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 1000;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -464,9 +472,15 @@ export async function main({
       }
     }
 
-    if (!anyFresh && previous !== null) {
+    if (!anyFresh && previous !== null && previous.schemaVersion === SCHEMA_VERSION) {
       log.log?.('  both sources unchanged — existing socrates.json is current');
       return 0;
+    }
+    if (!anyFresh && previous !== null) {
+      log.log?.(
+        `  both sources unchanged, but the cached payload is schema ` +
+          `${previous.schemaVersion ?? 'unknown'} and we emit ${SCHEMA_VERSION} — rebuilding`,
+      );
     }
 
     /*
