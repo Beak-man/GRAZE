@@ -1,21 +1,30 @@
 /**
  * Bake the SOCRATES conjunction list into a static JSON file at build time.
  *
- * Why: the live CSV is ~16 MB and CelesTrak rate-limits aggressive clients.
- * Fetching it per pageview does not scale and is what this script exists to
- * stop. Run it from a scheduler (or by hand); the app then serves a small
- * pre-parsed file and only touches CelesTrak when a user explicitly asks.
+ * Why: the live CSVs are ~16 MB each and CelesTrak rate-limits aggressive
+ * clients. Fetching per pageview does not scale. Run this from a scheduler (or
+ * by hand); the app then serves a small pre-parsed file and only touches
+ * CelesTrak when a user explicitly asks.
  *
- * Deliberately plain Node with no CI-vendor anything, so it runs identically
- * from a scheduler, a container, or a laptop. Parsing is delegated to
- * conjunction-core's parseSocratesCsv — per CLAUDE.md, CSV parsing and orbital
- * math live there and are never reimplemented.
+ * Why TWO files: sort-minRange.csv and sort-maxProb.csv contain the same
+ * conjunctions in different orders. Truncating either one alone is lossy in the
+ * other dimension — measured against live data, keeping only the 10 closest
+ * approaches dropped 6 of the 10 highest-probability events, including one at
+ * Pc≈0.20. We therefore take the head of BOTH and union them, so neither
+ * "closest" nor "most probable" is silently discarded.
+ *
+ * This is still a subset of ~149,500 screened conjunctions. That is disclosed
+ * in the UI rather than hidden; see estimatedTotalRecords below.
+ *
+ * Parsing is delegated to conjunction-core's parseSocratesCsv — per CLAUDE.md,
+ * CSV parsing and orbital math live there and are never reimplemented.
  *
  *   node scripts/fetch-socrates.mjs
  *
  * Env:
- *   SOCRATES_URL          source CSV (default: CelesTrak sort-minRange.csv)
- *   SOCRATES_MAX_RECORDS  rows to bake (default 10, matching the app's view)
+ *   SOCRATES_BASE_URL     directory holding the CSVs (default CelesTrak's)
+ *   SOCRATES_URL          legacy alias; its directory is used as the base
+ *   SOCRATES_MAX_RECORDS  rows taken from EACH file (default 1000)
  *   SOCRATES_CONTACT      contact string embedded in the User-Agent
  *   STRICT_DATA=1         exit non-zero on failure instead of degrading
  *
@@ -40,12 +49,32 @@ const OUTPUT_PATH = path.join(
 const META_PATH = path.join(ROOT, '.cache', 'socrates-meta.json');
 const CORE_ENTRY = path.join(ROOT, 'packages', 'conjunction-core', 'dist', 'index.js');
 
-const DEFAULT_URL = 'https://celestrak.org/SOCRATES/sort-minRange.csv';
+const DEFAULT_BASE_URL = 'https://celestrak.org/SOCRATES';
 const REPO_URL = 'https://github.com/Beak-man/GRAZE';
-const SCHEMA_VERSION = 1;
+/** Bumped from 1: records gained `sources`, and the payload gained per-file metadata. */
+const SCHEMA_VERSION = 2;
 const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 1000;
 const REQUEST_TIMEOUT_MS = 120_000;
+/**
+ * Rows taken from each file. 1000 yields ~1389 unique records (~337 KB raw,
+ * ~57 KB gzipped — 0.7% of the texture payload) and spans miss distances
+ * 0.015–4.882 km, i.e. 97.6% of the app's 0–5 km filter domain, plus every Pc
+ * threshold the UI offers. Deliberately generous rather than minimal.
+ */
+const DEFAULT_MAX_RECORDS = 1000;
+/**
+ * Range window per file. ~112 bytes/row measured, so 256 KiB comfortably covers
+ * 1000 rows with headroom for long object names, while transferring 1.5% of the
+ * 16 MB file. CelesTrak honours Range (verified: 206 Partial Content).
+ */
+const RANGE_BYTES = 256 * 1024;
+
+/** The two pre-sorted views CelesTrak publishes of the same screening run. */
+const SOURCE_FILES = {
+  minRange: 'sort-minRange.csv',
+  maxProb: 'sort-maxProb.csv',
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -63,10 +92,15 @@ async function packageVersion() {
   }
 }
 
-/** Previously stored validators, or an empty object when there is no cache. */
+/**
+ * Stored validators, keyed per source file. Each file has its own ETag —
+ * verified distinct on CelesTrak — so they must be tracked independently and
+ * one may return 304 while the other returns 200.
+ */
 export async function readMeta(metaPath = META_PATH) {
   try {
-    return JSON.parse(await readFile(metaPath, 'utf8'));
+    const parsed = JSON.parse(await readFile(metaPath, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
   }
@@ -79,8 +113,7 @@ export async function writeMeta(meta, metaPath = META_PATH) {
 
 /**
  * SOCRATES CSVs sometimes carry a generation timestamp in a leading comment.
- * Returns null when absent — the schema treats socratesEpoch as optional and
- * the client falls back to sourceLastModified.
+ * Returns null when absent — the schema treats socratesEpoch as optional.
  */
 export function extractSocratesEpoch(csv) {
   const head = csv.slice(0, 4096);
@@ -99,7 +132,22 @@ export function extractSocratesEpoch(csv) {
   return null;
 }
 
-/** Conditional GET with bounded exponential backoff. Returns {status, ...}. */
+/**
+ * A ranged response almost always cuts the final row mid-line. Dropping it is
+ * mandatory: a half-row either fails to parse or, worse, parses into a record
+ * with truncated numbers.
+ */
+export function dropPartialLine(csv) {
+  const newline = csv.lastIndexOf('\n');
+  return newline === -1 ? '' : csv.slice(0, newline + 1);
+}
+
+/** The column header, for verifying both files share one parser path. */
+export function headerOf(csv) {
+  return (csv.split('\n', 1)[0] ?? '').trim();
+}
+
+/** Conditional ranged GET with bounded exponential backoff. */
 export async function fetchCsv({
   url,
   userAgent,
@@ -107,8 +155,15 @@ export async function fetchCsv({
   fetchImpl = fetch,
   log = console,
   backoffMs = BASE_BACKOFF_MS,
+  rangeBytes = RANGE_BYTES,
 }) {
-  const headers = { 'User-Agent': userAgent, Accept: 'text/csv,*/*' };
+  const headers = {
+    'User-Agent': userAgent,
+    Accept: 'text/csv,*/*',
+    Range: `bytes=0-${rangeBytes - 1}`,
+  };
+  // Conditional headers apply to the whole entity; a 304 means our copy of the
+  // entity is current, which is exactly what we want to know before re-ranging.
   if (meta.etag) {
     headers['If-None-Match'] = meta.etag;
   }
@@ -126,14 +181,17 @@ export async function fetchCsv({
       if (response.status === 304) {
         return { status: 304 };
       }
-      if (!response.ok) {
+      // 206 is the expected success for a Range request; 200 means the server
+      // ignored it and sent the whole file, which still parses fine.
+      if (!response.ok && response.status !== 206) {
         throw new Error(`HTTP ${response.status} ${response.statusText ?? ''}`.trim());
       }
       return {
-        status: 200,
+        status: response.status,
         csv: await response.text(),
         etag: response.headers.get('etag'),
         lastModified: response.headers.get('last-modified'),
+        contentRange: response.headers.get('content-range'),
       };
     } catch (error) {
       lastError = error;
@@ -147,29 +205,68 @@ export async function fetchCsv({
   throw lastError ?? new Error('fetch failed');
 }
 
-/** Assemble the baked payload from raw CSV. Throws if it yields no records. */
-export function buildPayload({ csv, url, lastModified, maxRecords, parseSocratesCsv, now }) {
-  const conjunctions = parseSocratesCsv(csv, maxRecords);
-  if (!Array.isArray(conjunctions) || conjunctions.length === 0) {
+/** Total entity size from a Content-Range header, or null. */
+export function totalBytesFrom(contentRange) {
+  const match = /\/(\d+)\s*$/.exec(contentRange ?? '');
+  return match ? Number(match[1]) : null;
+}
+
+/** Stable identity for deduplication across the two orderings. */
+function recordKey(event) {
+  return `${event.noradId1}|${event.noradId2}|${new Date(event.tca).toISOString()}`;
+}
+
+/**
+ * Merge per-file record lists into one deduplicated set, recording which
+ * file(s) each record came from. Order is preserved: minRange first, then any
+ * maxProb records not already present.
+ */
+export function unionConjunctions(perSource) {
+  const out = [];
+  const index = new Map();
+  for (const [source, events] of perSource) {
+    for (const event of events) {
+      const key = recordKey(event);
+      const existing = index.get(key);
+      if (existing === undefined) {
+        index.set(key, out.length);
+        out.push({ ...event, sources: [source] });
+      } else if (!out[existing].sources.includes(source)) {
+        out[existing].sources.push(source);
+      }
+    }
+  }
+  return out;
+}
+
+/** Assemble the baked payload. Throws if the union is empty. */
+export function buildPayload({ perSource, sourceMeta, estimatedTotalRecords, now }) {
+  const conjunctions = unionConjunctions(perSource);
+  if (conjunctions.length === 0) {
     throw new Error('parsed 0 conjunctions — refusing to publish an empty file');
   }
+  const lastModifieds = Object.values(sourceMeta)
+    .map((s) => s.lastModified)
+    .filter(Boolean)
+    .sort();
   return {
     schemaVersion: SCHEMA_VERSION,
     generatedAt: (now ?? new Date()).toISOString(),
-    sourceUrl: url,
-    sourceLastModified: lastModified ? new Date(lastModified).toISOString() : null,
-    socratesEpoch: extractSocratesEpoch(csv),
+    // Kept at the top level for the client's informational "upstream freshness"
+    // note. The newest of the two files.
+    sourceLastModified: lastModifieds.length > 0 ? lastModifieds[lastModifieds.length - 1] : null,
+    socratesEpoch: sourceMeta.minRange?.socratesEpoch ?? null,
+    sources: sourceMeta,
     recordCount: conjunctions.length,
-    // parseSocratesCsv already drops the columns the app never reads (DILUTION
-    // and friends); tca is serialized as ISO and revived on load.
+    /** For the UI's scope disclosure — the app must not imply completeness. */
+    estimatedTotalRecords,
     conjunctions,
   };
 }
 
 /**
  * Write only after validating, and only via a temp file + rename, so a crash
- * or a zero-record parse can never leave a partial or empty file where a good
- * one used to be.
+ * or an empty parse can never leave a partial file where a good one used to be.
  */
 export async function writePayloadAtomically(payload, outputPath = OUTPUT_PATH) {
   if (!payload || payload.recordCount <= 0 || payload.conjunctions.length === 0) {
@@ -204,8 +301,10 @@ export async function main({
   backoffMs = BASE_BACKOFF_MS,
 } = {}) {
   const strict = env.STRICT_DATA === '1';
-  const url = env.SOCRATES_URL ?? DEFAULT_URL;
-  const maxRecords = Number(env.SOCRATES_MAX_RECORDS ?? 10);
+  const base =
+    env.SOCRATES_BASE_URL ??
+    (env.SOCRATES_URL ? env.SOCRATES_URL.replace(/\/[^/]*$/, '') : DEFAULT_BASE_URL);
+  const maxRecords = Number(env.SOCRATES_MAX_RECORDS ?? DEFAULT_MAX_RECORDS);
   const contact = env.SOCRATES_CONTACT ?? 'conjunction-data@graze.invalid';
 
   try {
@@ -217,52 +316,101 @@ export async function main({
      * A conditional request is only safe when there is something to fall back
      * on: 304 means "your copy is current", which is useless if no copy exists.
      * That combination is normal on CI, where the cache may restore .cache/ but
-     * not the output file (or the workspace is simply fresh) — the job would
-     * then deploy an artifact with no baked data, and every visitor would
-     * auto-fetch the full CSV. So validators are used only alongside a real
+     * not the output file. Validators are therefore used only alongside a real
      * output file; otherwise go unconditional and re-download.
      */
     const outputExists = existsSync(outputPath);
-    const hasValidators = Boolean(storedMeta.etag || storedMeta.lastModified);
-    const meta = outputExists ? storedMeta : {};
-
-    log.log?.(`Fetching SOCRATES from ${url}`);
-    if (hasValidators && !outputExists) {
+    const previous = outputExists ? await readCachedPayload(outputPath) : null;
+    if (!outputExists && (storedMeta.minRange || storedMeta.maxProb)) {
       log.warn?.(
         '  cached validators exist but the baked file does not — ' +
-          'sending an unconditional GET so a 304 cannot leave us empty-handed',
+          'sending unconditional GETs so a 304 cannot leave us empty-handed',
       );
-    } else if (meta.etag || meta.lastModified) {
-      log.log?.('  sending conditional headers from .cache/socrates-meta.json');
     }
-    const result = await fetchCsv({ url, userAgent, meta, fetchImpl, log, backoffMs });
 
-    if (result.status === 304) {
-      // Unchanged upstream: the existing output is still correct. Leave the
-      // file completely untouched so its mtime keeps reflecting real changes.
-      if (existsSync(outputPath)) {
-        log.log?.('  304 Not Modified — existing socrates.json is current');
-        return 0;
+    const perSource = [];
+    const sourceMeta = {};
+    const nextMeta = {};
+    let estimatedTotalRecords = null;
+    let anyFresh = false;
+    let header = null;
+
+    for (const [key, file] of Object.entries(SOURCE_FILES)) {
+      const url = `${base}/${file}`;
+      const meta = outputExists ? (storedMeta[key] ?? {}) : {};
+      log.log?.(`Fetching ${key} from ${url}`);
+      if (meta.etag || meta.lastModified) {
+        log.log?.(`  ${key}: sending conditional headers`);
       }
-      log.warn?.('  304 Not Modified but no baked file exists; clearing cached validators');
-      await writeMeta({}, metaPath);
-      throw new Error('304 with no cached output to reuse');
+      const result = await fetchCsv({ url, userAgent, meta, fetchImpl, log, backoffMs });
+
+      if (result.status === 304) {
+        // Reuse this file's slice of the previous payload; the other file may
+        // still have changed, which is why the two are tracked independently.
+        const reused = previous?.conjunctions?.filter((c) => c.sources?.includes(key)) ?? [];
+        if (reused.length === 0) {
+          throw new Error(`${key}: 304 with no cached records to reuse`);
+        }
+        log.log?.(`  ${key}: 304 Not Modified — reusing ${reused.length} cached records`);
+        perSource.push([key, reused]);
+        sourceMeta[key] = previous?.sources?.[key] ?? { url, lastModified: null };
+        nextMeta[key] = meta;
+        continue;
+      }
+
+      anyFresh = true;
+      const csv = dropPartialLine(result.csv);
+      const thisHeader = headerOf(csv);
+      if (header === null) {
+        header = thisHeader;
+      } else if (thisHeader !== header) {
+        // Both files are assumed to share one parser path; if CelesTrak ever
+        // diverges them, fail loudly rather than mis-parse one.
+        throw new Error(
+          `${key}: column schema differs from the other source file.\n` +
+            `  expected: ${header}\n  actual:   ${thisHeader}`,
+        );
+      }
+      const events = parseSocratesCsv(csv, maxRecords);
+      log.log?.(
+        `  ${key}: ${result.status} — ${events.length} records ` +
+          `(last modified ${result.lastModified ?? 'unknown'})`,
+      );
+      perSource.push([key, events]);
+      sourceMeta[key] = {
+        url,
+        lastModified: result.lastModified ? new Date(result.lastModified).toISOString() : null,
+        recordCount: events.length,
+        socratesEpoch: extractSocratesEpoch(csv),
+      };
+      nextMeta[key] = { etag: result.etag, lastModified: result.lastModified };
+
+      const total = totalBytesFrom(result.contentRange);
+      if (total !== null && csv.length > 0) {
+        const rows = csv.split('\n').length - 2; // minus header and trailing ''
+        if (rows > 0) {
+          estimatedTotalRecords = Math.round(total / (csv.length / rows));
+        }
+      }
+    }
+
+    if (!anyFresh && previous !== null) {
+      log.log?.('  both sources unchanged — existing socrates.json is current');
+      return 0;
     }
 
     const payload = buildPayload({
-      csv: result.csv,
-      url,
-      lastModified: result.lastModified,
-      maxRecords,
-      parseSocratesCsv,
+      perSource,
+      sourceMeta,
+      estimatedTotalRecords: estimatedTotalRecords ?? previous?.estimatedTotalRecords ?? null,
     });
     await writePayloadAtomically(payload, outputPath);
-    await writeMeta({ etag: result.etag, lastModified: result.lastModified }, metaPath);
+    await writeMeta(nextMeta, metaPath);
 
     const bytes = (await stat(outputPath)).size;
     log.log?.(
-      `  wrote ${payload.recordCount} conjunctions (${bytes} bytes), ` +
-        `source last modified ${payload.sourceLastModified ?? 'unknown'}`,
+      `  wrote ${payload.recordCount} unique conjunctions (${bytes} bytes) from ` +
+        `${perSource.map(([k, v]) => `${k}:${v.length}`).join(', ')}`,
     );
     return 0;
   } catch (error) {
@@ -278,6 +426,14 @@ export async function main({
       return 1;
     }
     return 0;
+  }
+}
+
+async function readCachedPayload(outputPath) {
+  try {
+    return JSON.parse(await readFile(outputPath, 'utf8'));
+  } catch {
+    return null;
   }
 }
 

@@ -30,11 +30,18 @@ import {
   setBannerFetching,
   showStaleBanner,
 } from './ui/dataBanner.js';
-import { initDataTimestamps, setDataEpoch } from './ui/dataTimestamps.js';
+import {
+  initDataTimestamps,
+  setDataEpoch,
+  setDataScope,
+  setUpstreamQuiet,
+} from './ui/dataTimestamps.js';
 import {
   dataEpochOf,
+  isUpstreamQuiet,
   loadBaked,
   readSourceConfig,
+  scopeDisclosure,
   selectSource,
 } from './data/socratesSource.js';
 import type { BakedSocrates, SourceConfig } from './data/socratesSource.js';
@@ -410,7 +417,7 @@ async function loadConjunctions(): Promise<void> {
   const baked = sourceConfig.mode === 'runtime' ? null : await loadBaked();
   const selection = selectSource(
     sourceConfig,
-    baked === null ? null : { dataEpoch: dataEpochOf(baked) },
+    baked === null ? null : { generatedAt: baked.generatedAt },
   );
 
   switch (selection.kind) {
@@ -443,8 +450,17 @@ async function loadConjunctions(): Promise<void> {
 function showBakedEvents(baked: BakedSocrates): void {
   const epoch = dataEpochOf(baked);
   const asOf = epoch === null ? new Date(baked.generatedAt) : new Date(epoch);
-  showLiveEvents(baked.conjunctions.slice(0, TOP_CONJUNCTIONS), asOf);
+  // The whole union is handed to the sidebar so the filters operate on it;
+  // truncating here would reintroduce exactly the scope defect the union fixes.
+  showLiveEvents(baked.conjunctions, asOf);
   setDataEpoch(epoch === null ? null : new Date(epoch));
+  const perFile = Math.max(
+    ...Object.values(baked.sources ?? {}).map((s) => s.recordCount ?? 0),
+    0,
+  );
+  setDataScope(scopeDisclosure(baked, perFile));
+  // Neutral note only — our pipeline being fresh is what matters for the banner.
+  setUpstreamQuiet(isUpstreamQuiet(baked));
 }
 
 async function loadRuntimeConjunctions(): Promise<void> {
@@ -484,6 +500,7 @@ async function loadRuntimeConjunctions(): Promise<void> {
     });
     showLiveEvents(events, sourceEpoch ?? new Date());
     setDataEpoch(sourceEpoch);
+    setDataScope(null);
   } catch (error) {
     if (token !== loadToken) {
       return;
@@ -531,6 +548,7 @@ async function loadLocalTestData(switchGpToLocal: boolean): Promise<void> {
     // The bundled snapshot carries no upstream epoch; render the row as unknown
     // rather than implying the fetch time is the data time.
     setDataEpoch(null);
+    setDataScope(null);
     void classifyRegimes(events);
   } catch (error) {
     if (token !== loadToken) {

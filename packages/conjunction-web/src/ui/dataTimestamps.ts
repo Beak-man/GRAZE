@@ -16,12 +16,25 @@ interface TimestampState {
   dataEpoch: Date | null;
   /** True once a source has reported in; before that we render nothing. */
   known: boolean;
+  /** Scope of the baked subset, shown ALWAYS so we never imply completeness. */
+  scope: { shown: number; total: number | null; perFile: number } | null;
+  /** Our pipeline is healthy but upstream has gone quiet. Neutral, not a warning. */
+  upstreamQuiet: boolean;
 }
 
-const state: TimestampState = { dataEpoch: null, known: false };
+const state: TimestampState = {
+  dataEpoch: null,
+  known: false,
+  scope: null,
+  upstreamQuiet: false,
+};
 
 function element(): HTMLElement | null {
   return document.getElementById('data-epoch');
+}
+
+function scopeElement(): HTMLElement | null {
+  return document.getElementById('data-scope');
 }
 
 function render(): void {
@@ -35,7 +48,42 @@ function render(): void {
     return;
   }
   const age = formatAge(Date.now() - state.dataEpoch.getTime(), t().age);
-  host.textContent = `${d.dataEpoch}: ${formatTca(state.dataEpoch)} (${age})`;
+  const quiet = state.upstreamQuiet ? ` — ${d.upstreamQuiet}` : '';
+  host.textContent = `${d.dataEpoch}: ${formatTca(state.dataEpoch)} (${age})${quiet}`;
+}
+
+function renderScope(): void {
+  const host = scopeElement();
+  if (host === null) {
+    return;
+  }
+  if (state.scope === null) {
+    host.textContent = '';
+    return;
+  }
+  const d = t().infoPanel;
+  const { shown, total, perFile } = state.scope;
+  host.textContent =
+    total === null
+      ? d.scopeUnknownTotal(shown, perFile)
+      : d.scope(shown, perFile, total.toLocaleString());
+}
+
+/**
+ * Record the scope of the baked subset. Rendered unconditionally — presenting a
+ * subset while implying completeness is worse than the truncation itself.
+ */
+export function setDataScope(
+  scope: { shown: number; total: number | null; perFile: number } | null,
+): void {
+  state.scope = scope;
+  renderScope();
+}
+
+/** Neutral note when upstream is quiet but our pipeline is fine. */
+export function setUpstreamQuiet(quiet: boolean): void {
+  state.upstreamQuiet = quiet;
+  render();
 }
 
 /**
@@ -51,6 +99,10 @@ export function setDataEpoch(epoch: Date | null): void {
 
 /** Wire language reactivity. Call once at startup. */
 export function initDataTimestamps(): void {
-  onLanguageChange(render);
+  onLanguageChange(() => {
+    render();
+    renderScope();
+  });
   render();
+  renderScope();
 }

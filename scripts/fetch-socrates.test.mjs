@@ -10,10 +10,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildPayload,
   buildUserAgent,
+  dropPartialLine,
   extractSocratesEpoch,
   fetchCsv,
+  headerOf,
   main,
   readMeta,
+  totalBytesFrom,
+  unionConjunctions,
   writeMeta,
   writePayloadAtomically,
 } from './fetch-socrates.mjs';
@@ -23,7 +27,10 @@ const CSV = [
   'NORAD_CAT_ID_1,OBJECT_NAME_1,DSE_1,NORAD_CAT_ID_2,OBJECT_NAME_2,DSE_2,TCA,TCA_RANGE,TCA_RELATIVE_SPEED,MAX_PROB,DILUTION',
   '25544,ISS (ZARYA) [+],1.0,100001,TEST DEB [-],2.0,2026-07-29 01:02:03.000,0.013,14.4,1.19E-02,0.007',
   '47919,STARLINK-2405 [+],5.0,68098,GLOBAL-34 [+],4.9,2026-07-30 20:53:01.605,0.014,4.5,3.42E-01,0.004',
-].join('\n');
+  // Trailing newline on purpose: this stands in for a Range response whose cut
+  // happened to land on a line boundary. Without it dropPartialLine would
+  // discard the final row — correct behaviour, but not what these cases test.
+].join('\n') + '\n';
 
 let workDir;
 const silent = { log: () => {}, warn: () => {}, error: () => {} };
@@ -45,58 +52,103 @@ describe('buildUserAgent', () => {
   });
 });
 
+const ev = (id1, id2, tca, extra = {}) => ({
+  noradId1: id1, name1: `OBJ${id1}`, noradId2: id2, name2: `OBJ${id2}`,
+  tca: new Date(tca), minRange: 0.1, relativeSpeed: 10, maxProbability: 1e-4,
+  dse1: 1, dse2: 1, ...extra,
+});
+
+describe('unionConjunctions', () => {
+  it('deduplicates on (idA, idB, TCA) and records provenance', () => {
+    const shared = ev(1, 2, '2026-07-29T01:00:00Z');
+    const union = unionConjunctions([
+      ['minRange', [shared, ev(3, 4, '2026-07-29T02:00:00Z')]],
+      ['maxProb', [ev(1, 2, '2026-07-29T01:00:00Z'), ev(5, 6, '2026-07-29T03:00:00Z')]],
+    ]);
+    expect(union).toHaveLength(3);
+    const both = union.find((r) => r.noradId1 === 1);
+    expect(both.sources.sort()).toEqual(['maxProb', 'minRange']);
+    expect(union.find((r) => r.noradId1 === 3).sources).toEqual(['minRange']);
+    expect(union.find((r) => r.noradId1 === 5).sources).toEqual(['maxProb']);
+  });
+
+  it('treats a differing TCA as a distinct conjunction', () => {
+    const union = unionConjunctions([
+      ['minRange', [ev(1, 2, '2026-07-29T01:00:00Z')]],
+      ['maxProb', [ev(1, 2, '2026-07-29T09:00:00Z')]],
+    ]);
+    expect(union).toHaveLength(2);
+  });
+
+  it('is order-stable: minRange records come first', () => {
+    const union = unionConjunctions([
+      ['minRange', [ev(9, 9, '2026-07-29T01:00:00Z')]],
+      ['maxProb', [ev(1, 1, '2026-07-29T02:00:00Z')]],
+    ]);
+    expect(union[0].noradId1).toBe(9);
+  });
+});
+
+describe('dropPartialLine', () => {
+  it('discards the trailing incomplete row a Range response leaves', () => {
+    const NL = String.fromCharCode(10);
+    const out = dropPartialLine(`a,b${NL}1,2${NL}3,tru`);
+    expect(out).toBe(`a,b${NL}1,2${NL}`);
+    expect(out.endsWith(NL)).toBe(true);
+  });
+
+  it('returns empty string when there is no complete line at all', () => {
+    expect(dropPartialLine('no newline here')).toBe('');
+  });
+});
+
+describe('headerOf / totalBytesFrom', () => {
+  it('extracts the header row', () => {
+    const NL = String.fromCharCode(10);
+    expect(headerOf(`A,B,C${NL}1,2,3${NL}`)).toBe('A,B,C');
+  });
+
+  it('reads the entity size from Content-Range', () => {
+    expect(totalBytesFrom('bytes 0-65535/16932788')).toBe(16932788);
+    expect(totalBytesFrom(null)).toBeNull();
+  });
+});
+
 describe('buildPayload', () => {
-  it('produces the documented metadata shape including schemaVersion', () => {
-    const payload = buildPayload({
-      csv: CSV,
-      url: 'https://example.invalid/sort-minRange.csv',
-      lastModified: 'Mon, 27 Jul 2026 23:00:00 GMT',
-      maxRecords: 10,
-      parseSocratesCsv,
-      now: new Date('2026-07-28T00:00:00Z'),
+  const sourceMeta = {
+    minRange: { url: 'u/min', lastModified: '2026-07-27T23:00:00.000Z', recordCount: 2 },
+    maxProb: { url: 'u/max', lastModified: '2026-07-28T23:00:00.000Z', recordCount: 2 },
+  };
+
+  it('produces the documented metadata shape at schemaVersion 2', () => {
+    const p = buildPayload({
+      perSource: [['minRange', [ev(1, 2, '2026-07-29T01:00:00Z')]]],
+      sourceMeta,
+      estimatedTotalRecords: 149500,
+      now: new Date('2026-07-29T00:00:00Z'),
     });
-    expect(payload.schemaVersion).toBe(1);
-    expect(payload.generatedAt).toBe('2026-07-28T00:00:00.000Z');
-    expect(payload.sourceUrl).toBe('https://example.invalid/sort-minRange.csv');
-    expect(payload.sourceLastModified).toBe('2026-07-27T23:00:00.000Z');
-    expect(payload).toHaveProperty('socratesEpoch');
-    expect(payload.recordCount).toBe(2);
-    expect(payload.conjunctions).toHaveLength(2);
+    expect(p.schemaVersion).toBe(2);
+    expect(p.generatedAt).toBe('2026-07-29T00:00:00.000Z');
+    expect(p.estimatedTotalRecords).toBe(149500);
+    expect(p.sources).toEqual(sourceMeta);
+    expect(p.recordCount).toBe(1);
+    // Top-level sourceLastModified is the NEWEST of the two files.
+    expect(p.sourceLastModified).toBe('2026-07-28T23:00:00.000Z');
   });
 
-  it('keeps only the fields the app reads', () => {
-    const payload = buildPayload({ csv: CSV, url: 'u', maxRecords: 1, parseSocratesCsv });
-    expect(Object.keys(payload.conjunctions[0]).sort()).toEqual(
-      [
-        'dse1',
-        'dse2',
-        'maxProbability',
-        'minRange',
-        'name1',
-        'name2',
-        'noradId1',
-        'noradId2',
-        'relativeSpeed',
-        'tca',
-      ].sort(),
-    );
-    // DILUTION is present in the CSV and deliberately dropped.
-    expect(payload.conjunctions[0]).not.toHaveProperty('DILUTION');
-  });
-
-  it('honours the record cap', () => {
-    expect(buildPayload({ csv: CSV, url: 'u', maxRecords: 1, parseSocratesCsv }).recordCount).toBe(1);
+  it('carries provenance on every record', () => {
+    const p = buildPayload({
+      perSource: [['minRange', [ev(1, 2, '2026-07-29T01:00:00Z')]]],
+      sourceMeta,
+      estimatedTotalRecords: null,
+    });
+    expect(p.conjunctions[0].sources).toEqual(['minRange']);
   });
 
   it('throws rather than publishing an empty result', () => {
-    const headerOnly = CSV.split('\n')[0];
-    expect(() => buildPayload({ csv: headerOnly, url: 'u', maxRecords: 10, parseSocratesCsv })).toThrow(
+    expect(() => buildPayload({ perSource: [['minRange', []]], sourceMeta })).toThrow(
       /0 conjunctions/,
     );
-  });
-
-  it('reports a null socratesEpoch when the CSV carries none', () => {
-    expect(buildPayload({ csv: CSV, url: 'u', maxRecords: 10, parseSocratesCsv }).socratesEpoch).toBeNull();
   });
 });
 
@@ -112,10 +164,19 @@ describe('extractSocratesEpoch', () => {
   });
 });
 
+/** A valid schemaVersion-2 payload built through the real parser. */
+function goodPayload() {
+  return buildPayload({
+    perSource: [['minRange', parseSocratesCsv(CSV, 10)]],
+    sourceMeta: { minRange: { url: 'u/min', lastModified: null, recordCount: 2 } },
+    estimatedTotalRecords: 149500,
+  });
+}
+
 describe('writePayloadAtomically', () => {
   it('refuses to overwrite a good file with a zero-record payload', async () => {
     const out = path.join(workDir, 'socrates.json');
-    const good = buildPayload({ csv: CSV, url: 'u', maxRecords: 10, parseSocratesCsv });
+    const good = goodPayload();
     await writePayloadAtomically(good, out);
     const before = await readFile(out, 'utf8');
 
@@ -127,20 +188,14 @@ describe('writePayloadAtomically', () => {
 
   it('leaves no .tmp file behind on success', async () => {
     const out = path.join(workDir, 'socrates.json');
-    await writePayloadAtomically(
-      buildPayload({ csv: CSV, url: 'u', maxRecords: 10, parseSocratesCsv }),
-      out,
-    );
+    await writePayloadAtomically(goodPayload(), out);
     expect(existsSync(`${out}.tmp`)).toBe(false);
     expect(JSON.parse(await readFile(out, 'utf8')).recordCount).toBe(2);
   });
 
   it('writes minified JSON', async () => {
     const out = path.join(workDir, 'socrates.json');
-    await writePayloadAtomically(
-      buildPayload({ csv: CSV, url: 'u', maxRecords: 10, parseSocratesCsv }),
-      out,
-    );
+    await writePayloadAtomically(goodPayload(), out);
     const text = await readFile(out, 'utf8');
     expect(text).not.toContain('\n  ');
   });
@@ -303,11 +358,20 @@ describe('main end-to-end with mocked HTTP', () => {
     expect(await main(mainOptions(fetchImpl))).toBe(0);
 
     const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
-    expect(written.schemaVersion).toBe(1);
+    expect(written.schemaVersion).toBe(2);
+    // Both files return the same CSV here, so the union dedups to 2 records.
     expect(written.recordCount).toBe(2);
+    expect(written.conjunctions[0].sources.sort()).toEqual(['maxProb', 'minRange']);
     expect(written.sourceLastModified).toBe('2026-07-27T23:00:00.000Z');
 
-    expect(await readMeta(path.join(workDir, '.cache', 'socrates-meta.json'))).toEqual({
+    // Validators are tracked per source file — they have distinct ETags.
+    const meta = await readMeta(path.join(workDir, '.cache', 'socrates-meta.json'));
+    expect(Object.keys(meta).sort()).toEqual(['maxProb', 'minRange']);
+    expect(meta.minRange).toEqual({
+      etag: '"v1"',
+      lastModified: 'Mon, 27 Jul 2026 23:00:00 GMT',
+    });
+    expect(meta.maxProb).toEqual({
       etag: '"v1"',
       lastModified: 'Mon, 27 Jul 2026 23:00:00 GMT',
     });
@@ -338,9 +402,10 @@ describe('main end-to-end with mocked HTTP', () => {
     };
     expect(await main(mainOptions(notModified))).toBe(0);
 
-    // Conditional headers were sent on the second run, from the stored meta.
-    expect(seenHeaders[1]['If-None-Match']).toBe('"v1"');
-    expect(seenHeaders[1]['If-Modified-Since']).toBe('Mon, 27 Jul 2026 23:00:00 GMT');
+    // Two files per run, so the second run's requests are indices 2 and 3.
+    expect(seenHeaders[2]['If-None-Match']).toBe('"v1"');
+    expect(seenHeaders[2]['If-Modified-Since']).toBe('Mon, 27 Jul 2026 23:00:00 GMT');
+    expect(seenHeaders[3]['If-None-Match']).toBe('"v1"');
     // And the output was reused untouched — same bytes, same mtime.
     expect(await readFile(out, 'utf8')).toBe(before);
     expect((await stat(out)).mtimeMs).toBe(mtimeBefore);
@@ -380,7 +445,10 @@ describe('conditional requests require an existing output file', () => {
     const metaPath = path.join(workDir, '.cache', 'socrates-meta.json');
     const outputPath = path.join(workDir, 'socrates.json');
     await writeMeta(
-      { etag: '"cached-v1"', lastModified: 'Mon, 27 Jul 2026 23:00:00 GMT' },
+      {
+        minRange: { etag: '"cached-v1"', lastModified: 'Mon, 27 Jul 2026 23:00:00 GMT' },
+        maxProb: { etag: '"cached-v2"', lastModified: 'Mon, 27 Jul 2026 23:00:00 GMT' },
+      },
       metaPath,
     );
     expect(existsSync(outputPath)).toBe(false);
@@ -406,11 +474,14 @@ describe('conditional requests require an existing output file', () => {
     });
 
     expect(code).toBe(0);
-    expect(seen).toHaveLength(1);
-    expect(seen[0]['If-None-Match']).toBeUndefined();
-    expect(seen[0]['If-Modified-Since']).toBeUndefined();
-    // Still a proper request, just unconditional.
-    expect(seen[0]['User-Agent']).toContain('GRAZE/');
+    // One request per source file, and NEITHER may carry a validator.
+    expect(seen).toHaveLength(2);
+    for (const headers of seen) {
+      expect(headers['If-None-Match']).toBeUndefined();
+      expect(headers['If-Modified-Since']).toBeUndefined();
+      expect(headers['User-Agent']).toContain('GRAZE/');
+      expect(headers['Range']).toMatch(/^bytes=0-/);
+    }
     // And it actually produced the file the deploy needs.
     expect(existsSync(outputPath)).toBe(true);
     expect(JSON.parse(await readFile(outputPath, 'utf8')).recordCount).toBe(2);
@@ -419,11 +490,8 @@ describe('conditional requests require an existing output file', () => {
   it('still sends conditional headers when the output file IS present', async () => {
     const metaPath = path.join(workDir, '.cache', 'socrates-meta.json');
     const outputPath = path.join(workDir, 'socrates.json');
-    await writePayloadAtomically(
-      buildPayload({ csv: CSV, url: 'u', maxRecords: 10, parseSocratesCsv }),
-      outputPath,
-    );
-    await writeMeta({ etag: '"cached-v1"' }, metaPath);
+    await writePayloadAtomically(goodPayload(), outputPath);
+    await writeMeta({ minRange: { etag: '"cached-v1"' } }, metaPath);
 
     const seen = [];
     const fetchImpl = async (_url, init) => {
@@ -440,5 +508,95 @@ describe('conditional requests require an existing output file', () => {
     });
     expect(code).toBe(0);
     expect(seen[0]['If-None-Match']).toBe('"cached-v1"');
+  });
+});
+
+describe('record cap', () => {
+  /**
+   * Regression guard. The default was 10, which silently dropped 6 of the 10
+   * highest-probability events measured against live data. It must never
+   * return to that.
+   */
+  it('does NOT default to 10', async () => {
+    let requested = 0;
+    const many = [CSV.split('\n')[0]]
+      .concat(
+        Array.from({ length: 40 }, (_, i) =>
+          `${1000 + i},A${i} [+],1.0,${2000 + i},B${i} [-],1.0,` +
+          `2026-07-29 0${(i % 9) + 1}:00:00.000,0.0${(i % 9) + 1},14.4,1.19E-02,0.007`,
+        ),
+      )
+      .join('\n') + '\n';
+    const fetchImpl = async () => {
+      requested++;
+      return { status: 206, ok: false, text: async () => many, headers: new Headers() };
+    };
+    await main(mainOptions(fetchImpl, { SOCRATES_MAX_RECORDS: undefined }));
+    const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
+    expect(requested).toBe(2);
+    // With a default of 10 this would cap at 10; the real default is far higher.
+    expect(written.recordCount).toBe(40);
+  });
+});
+
+describe('independent per-file validators', () => {
+  it('handles 304 on one file and 200 on the other', async () => {
+    const out = path.join(workDir, 'socrates.json');
+    const metaPath = path.join(workDir, '.cache', 'socrates-meta.json');
+
+    // Seed a full run so both files have cached records and validators.
+    const seed = async () => ({
+      status: 206,
+      ok: false,
+      text: async () => CSV,
+      headers: new Headers({ etag: '"seed"', 'last-modified': 'Mon, 27 Jul 2026 23:00:00 GMT' }),
+    });
+    expect(await main(mainOptions(seed))).toBe(0);
+    const firstGeneratedAt = JSON.parse(await readFile(out, 'utf8')).generatedAt;
+
+    // Now: minRange unchanged (304), maxProb changed (206 with a new record).
+    const changed = [CSV.split('\n')[0],
+      '55555,NEW A [+],1.0,66666,NEW B [-],1.0,2026-08-01 12:00:00.000,0.5,9.9,5.00E-03,0.01',
+    ].join('\n') + '\n';
+    const mixed = async (url) =>
+      url.includes('minRange')
+        ? { status: 304, ok: false, headers: new Headers() }
+        : {
+            status: 206,
+            ok: false,
+            text: async () => changed,
+            headers: new Headers({ etag: '"fresh"' }),
+          };
+    expect(await main(mainOptions(mixed))).toBe(0);
+
+    const after = JSON.parse(await readFile(out, 'utf8'));
+    // The 304 file's records were reused from the previous payload...
+    const fromMin = after.conjunctions.filter((c) => c.sources.includes('minRange'));
+    expect(fromMin.length).toBeGreaterThan(0);
+    // ...and the 200 file's new record is present.
+    expect(after.conjunctions.some((c) => c.noradId1 === 55555)).toBe(true);
+    // The file was genuinely rewritten, not skipped.
+    expect(after.generatedAt).not.toBe(firstGeneratedAt);
+
+    // Validators diverge: minRange keeps its old ETag, maxProb takes the new one.
+    const meta = await readMeta(metaPath);
+    expect(meta.minRange.etag).toBe('"seed"');
+    expect(meta.maxProb.etag).toBe('"fresh"');
+  });
+
+  it('leaves the file untouched when BOTH sources return 304', async () => {
+    const out = path.join(workDir, 'socrates.json');
+    const seed = async () => ({
+      status: 206, ok: false, text: async () => CSV,
+      headers: new Headers({ etag: '"seed"' }),
+    });
+    await main(mainOptions(seed));
+    const before = await readFile(out, 'utf8');
+    const mtimeBefore = (await stat(out)).mtimeMs;
+
+    const bothStale = async () => ({ status: 304, ok: false, headers: new Headers() });
+    expect(await main(mainOptions(bothStale))).toBe(0);
+    expect(await readFile(out, 'utf8')).toBe(before);
+    expect((await stat(out)).mtimeMs).toBe(mtimeBefore);
   });
 });

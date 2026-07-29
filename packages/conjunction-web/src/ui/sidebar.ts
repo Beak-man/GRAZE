@@ -155,6 +155,15 @@ export class Sidebar {
     const visible = this.filteredEvents();
     this.filterCount.textContent = t().filters.shown(visible.length, this.events.length);
     this.table.replaceChildren(this.buildHead(), this.buildBody(visible));
+    // A zero-result filter is ambiguous: it may mean "no such conjunction" or
+    // "none inside the baked subset". Say which, rather than showing an empty
+    // table that implies the former.
+    if (visible.length === 0 && this.events.length > 0) {
+      const note = document.createElement('div');
+      note.className = 'table-message';
+      note.textContent = t().filters.noMatchesInSubset;
+      this.container.append(note);
+    }
     this.applySelection();
   }
 

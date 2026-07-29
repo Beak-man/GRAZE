@@ -44,6 +44,8 @@ export interface Dictionary {
     readonly rocketBody: string;
     readonly showAll: string;
     readonly shown: (visible: number, total: number) => string;
+    /** Shown when filters match nothing in the baked subset. */
+    readonly noMatchesInSubset: string;
   };
   readonly tooltips: {
     readonly regime: string;
@@ -87,6 +89,11 @@ export interface Dictionary {
   readonly infoPanel: {
     readonly dataEpoch: string;
     readonly dataEpochUnknown: string;
+    /** Always-visible scope statement; the app must never imply completeness. */
+    readonly scope: (shown: number, perFile: number, total: string) => string;
+    readonly scopeUnknownTotal: (shown: number, perFile: number) => string;
+    /** Neutral note: our pipeline is fine, CelesTrak just hasn't published. */
+    readonly upstreamQuiet: string;
     readonly placeholder: string;
     readonly tca: string;
     readonly missDistance: string;
@@ -168,6 +175,9 @@ const en: Dictionary = {
     rocketBody: 'R/B',
     showAll: 'show all',
     shown: (visible, total) => `${visible} / ${total} shown`,
+    noMatchesInSubset:
+      'No conjunctions match these filters in the baked subset. Matching events may ' +
+      'exist in the full SOCRATES screening run.',
   },
   tooltips: {
     regime:
@@ -220,6 +230,13 @@ const en: Dictionary = {
   infoPanel: {
     dataEpoch: 'Data epoch',
     dataEpochUnknown: 'unknown',
+    scope: (shown, perFile, total) =>
+      `Showing the ${perFile} closest approaches and ${perFile} highest-probability ` +
+      `events from SOCRATES (${shown} of ~${total} screened conjunctions).`,
+    scopeUnknownTotal: (shown, perFile) =>
+      `Showing the ${perFile} closest approaches and ${perFile} highest-probability ` +
+      `events from SOCRATES (${shown} conjunctions; the full screening run is larger).`,
+    upstreamQuiet: 'CelesTrak has not published new SOCRATES data recently.',
     placeholder: 'Select a conjunction to analyze it.',
     tca: 'TCA',
     missDistance: 'Miss distance',
@@ -315,6 +332,9 @@ const es: Dictionary = {
     rocketBody: 'Cohete',
     showAll: 'mostrar todo',
     shown: (visible, total) => `${visible} / ${total} mostradas`,
+    noMatchesInSubset:
+      'Ninguna conjunción coincide con estos filtros en el subconjunto incluido. Pueden ' +
+      'existir eventos coincidentes en el análisis completo de SOCRATES.',
   },
   tooltips: {
     regime:
@@ -367,6 +387,13 @@ const es: Dictionary = {
   infoPanel: {
     dataEpoch: 'Época de los datos',
     dataEpochUnknown: 'desconocida',
+    scope: (shown, perFile, total) =>
+      `Mostrando las ${perFile} aproximaciones máximas más cercanas y los ${perFile} eventos ` +
+      `de mayor probabilidad de SOCRATES (${shown} de ~${total} conjunciones analizadas).`,
+    scopeUnknownTotal: (shown, perFile) =>
+      `Mostrando las ${perFile} aproximaciones máximas más cercanas y los ${perFile} eventos ` +
+      `de mayor probabilidad de SOCRATES (${shown} conjunciones; el análisis completo es mayor).`,
+    upstreamQuiet: 'CelesTrak no ha publicado datos SOCRATES nuevos recientemente.',
     placeholder: 'Selecciona una conjunción para analizarla.',
     tca: 'TCA',
     missDistance: 'Distancia de cruce',

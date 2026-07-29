@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_MAX_AGE_HOURS,
   dataEpochOf,
+  isUpstreamQuiet,
   loadBaked,
   readSourceConfig,
+  scopeDisclosure,
   selectSource,
 } from '../src/data/socratesSource.js';
 import type { BakedSocrates, SourceConfig } from '../src/data/socratesSource.js';
@@ -21,9 +23,9 @@ function config(overrides: Partial<SourceConfig> = {}): SourceConfig {
   };
 }
 
-/** A baked probe whose epoch is `hours` before NOW. */
-function agedBy(hours: number): { dataEpoch: string } {
-  return { dataEpoch: new Date(NOW.getTime() - hours * HOUR).toISOString() };
+/** A baked probe whose *pipeline* run (generatedAt) is `hours` before NOW. */
+function agedBy(hours: number): { generatedAt: string } {
+  return { generatedAt: new Date(NOW.getTime() - hours * HOUR).toISOString() };
 }
 
 describe('selectSource', () => {
@@ -95,8 +97,8 @@ describe('selectSource', () => {
   });
 
   it('an undated or unparseable baked file is usable but never stale', () => {
-    expect(selectSource(config(), { dataEpoch: null }, NOW).kind).toBe('baked');
-    expect(selectSource(config(), { dataEpoch: 'not-a-date' }, NOW).kind).toBe('baked');
+    expect(selectSource(config(), { generatedAt: null }, NOW).kind).toBe('baked');
+    expect(selectSource(config(), { generatedAt: 'not-a-date' }, NOW).kind).toBe('baked');
   });
 
   it('production ignores useLocalSocrates (the dev bypass is dev-only)', () => {
@@ -110,7 +112,7 @@ describe('selectSource', () => {
 });
 
 describe('readSourceConfig', () => {
-  it('defaults to auto mode and an 8 hour max age', () => {
+  it('defaults to auto mode and a 24 hour max age', () => {
     const parsed = readSourceConfig({}, false);
     expect(parsed.mode).toBe('auto');
     expect(parsed.maxAgeHours).toBe(DEFAULT_MAX_AGE_HOURS);
@@ -220,5 +222,83 @@ describe('loadBaked', () => {
       throw new TypeError('Failed to fetch');
     }) as unknown as typeof fetch;
     expect(await loadBaked('/data/socrates.json', throwing)).toBeNull();
+  });
+});
+
+describe('staleness is keyed on generatedAt, not sourceLastModified', () => {
+  /**
+   * The two questions are different:
+   *   generatedAt        -> "is OUR bake pipeline alive"  (drives the banner)
+   *   sourceLastModified -> "is CELESTRAK publishing"     (informational only)
+   *
+   * Conflating them produced false "stale" banners whenever CelesTrak ran long,
+   * and every one of those invited a click that re-fetched an identical file.
+   */
+  it('is fresh when the pipeline ran recently, however old upstream is', () => {
+    const selection = selectSource(config(), { generatedAt: agedBy(2).generatedAt }, NOW);
+    expect(selection.kind).toBe('baked');
+  });
+
+  it('defaults to a 24h threshold, not the 8h scheduler cadence', () => {
+    // 8h would flip to stale on a single late run; 24h tolerates three.
+    expect(DEFAULT_MAX_AGE_HOURS).toBe(24);
+    expect(selectSource(config(), agedBy(9), NOW).kind).toBe('baked');
+    expect(selectSource(config(), agedBy(25), NOW).kind).toBe('baked-stale');
+  });
+
+  it('flags stale only once the pipeline itself has gone quiet', () => {
+    expect(selectSource(config(), agedBy(23), NOW).kind).toBe('baked');
+    expect(selectSource(config(), agedBy(48), NOW).kind).toBe('baked-stale');
+  });
+});
+
+describe('isUpstreamQuiet', () => {
+  const quietFixture = (upstreamHoursAgo: number): BakedSocrates =>
+    bakedFixture({
+      generatedAt: new Date(NOW.getTime() - HOUR).toISOString(),
+      sourceLastModified: new Date(NOW.getTime() - upstreamHoursAgo * HOUR).toISOString(),
+      socratesEpoch: null,
+    });
+
+  it('reports quiet when upstream has not published for over a day', () => {
+    expect(isUpstreamQuiet(quietFixture(30), NOW)).toBe(true);
+  });
+
+  it('is silent when upstream is recent', () => {
+    expect(isUpstreamQuiet(quietFixture(3), NOW)).toBe(false);
+  });
+
+  it('is silent when upstream time is unknown', () => {
+    expect(
+      isUpstreamQuiet(bakedFixture({ sourceLastModified: null, socratesEpoch: null }), NOW),
+    ).toBe(false);
+  });
+
+  /**
+   * The case that motivated the split: CelesTrak quiet for days while our bake
+   * ran an hour ago. That is NOT a fault, so it must not produce a stale
+   * selection — which is what puts a "Fetch latest" button on screen.
+   */
+  it('old upstream + fresh pipeline => no stale banner, so no fetch button', () => {
+    const baked = quietFixture(72);
+    expect(isUpstreamQuiet(baked, NOW)).toBe(true);
+    const selection = selectSource(config(), { generatedAt: baked.generatedAt }, NOW);
+    expect(selection.kind).toBe('baked');
+    expect(selection.kind).not.toBe('baked-stale');
+  });
+});
+
+describe('scopeDisclosure', () => {
+  it('reports what is shown against the full screening run', () => {
+    const baked = bakedFixture({ recordCount: 1389, estimatedTotalRecords: 149500 });
+    expect(scopeDisclosure(baked, 1000)).toEqual({
+      shown: 1389,
+      total: 149500,
+      perFile: 1000,
+    });
+  });
+
+  it('tolerates an unknown total', () => {
+    expect(scopeDisclosure(bakedFixture({ recordCount: 5 }), 1000).total).toBeNull();
   });
 });

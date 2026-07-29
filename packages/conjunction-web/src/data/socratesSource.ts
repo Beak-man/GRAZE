@@ -10,14 +10,27 @@ import type { ConjunctionEvent } from 'conjunction-core';
 
 export type DataMode = 'auto' | 'baked' | 'runtime';
 
+/** Per-source metadata recorded by the bake step (schemaVersion 2). */
+export interface BakedSourceMeta {
+  url: string;
+  lastModified: string | null;
+  recordCount?: number;
+  socratesEpoch?: string | null;
+}
+
 /** Shape written by scripts/fetch-socrates.mjs. */
 export interface BakedSocrates {
   schemaVersion: number;
+  /** When OUR pipeline last produced this file. Drives staleness. */
   generatedAt: string;
-  sourceUrl: string;
+  sourceUrl?: string;
+  /** When CELESTRAK last published. Informational only — never drives staleness. */
   sourceLastModified: string | null;
   socratesEpoch: string | null;
+  sources?: Record<string, BakedSourceMeta>;
   recordCount: number;
+  /** Rough size of the full screening run, for the UI's scope disclosure. */
+  estimatedTotalRecords?: number | null;
   conjunctions: ConjunctionEvent[];
 }
 
@@ -30,8 +43,11 @@ export interface SourceConfig {
 
 /** What the baked file looks like to the decision, or null when absent. */
 export interface BakedProbe {
-  /** Best available epoch for the data: socratesEpoch, else sourceLastModified. */
-  dataEpoch: string | null;
+  /**
+   * When our pipeline produced the file. This — not the upstream publication
+   * time — decides staleness, because it answers "is the bake still running".
+   */
+  generatedAt: string | null;
 }
 
 export type Selection =
@@ -44,7 +60,23 @@ export type Selection =
   /** Nothing baked (or mode=runtime): fetch from CelesTrak now. */
   | { kind: 'runtime' };
 
-export const DEFAULT_MAX_AGE_HOURS = 8;
+/**
+ * Staleness threshold, in hours, applied to `generatedAt` — i.e. "is our bake
+ * pipeline alive", NOT "has CelesTrak published lately".
+ *
+ * 24h rather than 8h on purpose. The scheduler runs every 8h, so an 8h
+ * threshold would flip to "stale" on any single late or skipped run and invite
+ * a click that re-fetches a byte-identical file. 24h means three consecutive
+ * missed runs before we cry wolf.
+ */
+export const DEFAULT_MAX_AGE_HOURS = 24;
+
+/**
+ * How long upstream may go without publishing before we mention it. Purely
+ * informational: CelesTrak regenerating slowly is their business, not a fault
+ * in our pipeline, so it must never produce a warning or a fetch button.
+ */
+export const UPSTREAM_QUIET_HOURS = 24;
 
 function parseMode(value: unknown): DataMode {
   return value === 'baked' || value === 'runtime' ? value : 'auto';
@@ -92,11 +124,11 @@ export function selectSource(
     // mode=baked never networks, even with nothing to show.
     return config.mode === 'baked' ? { kind: 'baked', ageMs: null } : { kind: 'runtime' };
   }
-  if (baked.dataEpoch === null) {
+  if (baked.generatedAt === null) {
     // Undated baked file: usable, but age is unknown so it can't be called stale.
     return { kind: 'baked', ageMs: null };
   }
-  const epochMs = Date.parse(baked.dataEpoch);
+  const epochMs = Date.parse(baked.generatedAt);
   if (Number.isNaN(epochMs)) {
     return { kind: 'baked', ageMs: null };
   }
@@ -112,6 +144,35 @@ export function selectSource(
 /** The epoch to display: the SOCRATES epoch when known, else Last-Modified. */
 export function dataEpochOf(baked: BakedSocrates): string | null {
   return baked.socratesEpoch ?? baked.sourceLastModified;
+}
+
+/**
+ * True when our pipeline is healthy but CelesTrak simply has not published
+ * anything new. Worth a neutral note — never a warning, and never a fetch
+ * button, because re-fetching would return a byte-identical file.
+ */
+export function isUpstreamQuiet(baked: BakedSocrates, now: Date = new Date()): boolean {
+  const upstream = dataEpochOf(baked);
+  if (upstream === null) {
+    return false;
+  }
+  const upstreamMs = Date.parse(upstream);
+  if (Number.isNaN(upstreamMs)) {
+    return false;
+  }
+  return now.getTime() - upstreamMs > UPSTREAM_QUIET_HOURS * 3_600_000;
+}
+
+/** Human-facing scope statement. The app must never imply completeness. */
+export function scopeDisclosure(
+  baked: BakedSocrates,
+  perFile: number,
+): { shown: number; total: number | null; perFile: number } {
+  return {
+    shown: baked.recordCount,
+    total: baked.estimatedTotalRecords ?? null,
+    perFile,
+  };
 }
 
 function isBakedSocrates(value: unknown): value is BakedSocrates {
