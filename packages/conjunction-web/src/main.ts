@@ -1,5 +1,4 @@
 import {
-  classifyOrbitRegime,
   computeCloseApproach,
   eciToThreeJs,
   fetchConjunctions,
@@ -41,6 +40,7 @@ import {
   isUpstreamQuiet,
   loadBaked,
   readSourceConfig,
+  regimeIndexOf,
   scopeDisclosure,
   selectSource,
 } from './data/socratesSource.js';
@@ -63,7 +63,6 @@ const CELESTRAK_BASE_URL = import.meta.env.DEV
 
 const TOP_CONJUNCTIONS = 10;
 const REFRESH_INTERVAL_MS = 8 * 60 * 60 * 1000;
-const CLASSIFY_CONCURRENCY = 4;
 // Persistent-cache freshness windows. SOCRATES regenerates a few times a day
 // (matching REFRESH_INTERVAL_MS); GP element sets change slowly, so cache them
 // longer. Reloads within these windows make no CelesTrak requests.
@@ -368,37 +367,6 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
   setStatus(() => t().status.showing(event.name1, event.name2));
 }
 
-/**
- * Hard cap on how many objects get a GP lookup for regime classification.
- *
- * One request per unique object, so this scales with the baked set: the union
- * carries ~1389 records ≈ 2700 objects, and classifying all of them would mean
- * ~2700 CelesTrak requests *per first visit* — precisely the hammering the
- * build-time bake exists to prevent. eventPassesFilters deliberately shows
- * unclassified objects rather than hiding them, so capping degrades the regime
- * filter's precision for deep rows instead of breaking it.
- */
-const CLASSIFY_LIMIT = 60;
-
-/** Classify orbit regimes for the leading listed objects, a few fetches at a time. */
-async function classifyRegimes(events: ConjunctionEvent[]): Promise<void> {
-  const ids = [...new Set(events.flatMap((event) => [event.noradId1, event.noradId2]))].slice(
-    0,
-    CLASSIFY_LIMIT,
-  );
-  const queue = [...ids];
-  const workers = Array.from({ length: CLASSIFY_CONCURRENCY }, async () => {
-    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
-      try {
-        sidebar.setRegime(id, classifyOrbitRegime(await getElements(id)));
-      } catch {
-        // Regime stays unknown; the filter shows unclassified objects.
-      }
-    }
-  });
-  await Promise.all(workers);
-}
-
 /** What the runtime path caches: the events plus the upstream publication time. */
 interface CachedSocrates {
   events: ConjunctionEvent[];
@@ -420,7 +388,6 @@ function showLiveEvents(events: ConjunctionEvent[], asOf: Date): void {
   sidebar.setEvents(events);
   setDataAsOf(() => t().status.dataAsOf(formatTca(asOf)));
   setStatus(() => t().status.topConjunctions(events.length));
-  void classifyRegimes(events);
 }
 
 /**
@@ -469,6 +436,8 @@ function showBakedEvents(baked: BakedSocrates): void {
   // truncating here would reintroduce exactly the scope defect the union fixes.
   showLiveEvents(baked.conjunctions, asOf);
   setDataEpoch(epoch === null ? null : new Date(epoch));
+  // Regimes are baked in; the filter reads them with zero network requests.
+  sidebar.setBakedRegimes(regimeIndexOf(baked), baked.regimeUnknownRecords ?? 0);
   const perFile = Math.max(
     ...Object.values(baked.sources ?? {}).map((s) => s.recordCount ?? 0),
     0,
@@ -488,6 +457,7 @@ async function loadRuntimeConjunctions(): Promise<void> {
     const epoch = cached.data.sourceEpoch === null ? null : new Date(cached.data.sourceEpoch);
     showLiveEvents(cached.data.events, epoch ?? cached.savedAt);
     setDataEpoch(epoch);
+    sidebar.setRegimesUnavailable();
     return;
   }
 
@@ -516,6 +486,7 @@ async function loadRuntimeConjunctions(): Promise<void> {
     showLiveEvents(events, sourceEpoch ?? new Date());
     setDataEpoch(sourceEpoch);
     setDataScope(null);
+    sidebar.setRegimesUnavailable();
   } catch (error) {
     if (token !== loadToken) {
       return;
@@ -564,8 +535,8 @@ async function loadLocalTestData(switchGpToLocal: boolean): Promise<void> {
     // rather than implying the fetch time is the data time.
     setDataEpoch(null);
     setDataScope(null);
-    void classifyRegimes(events);
-  } catch (error) {
+    sidebar.setRegimesUnavailable();
+    } catch (error) {
     if (token !== loadToken) {
       return;
     }

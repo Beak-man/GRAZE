@@ -6,7 +6,18 @@
  * so every branch is testable without touching the network. See
  * `test/socratesSource.test.ts`.
  */
-import type { ConjunctionEvent } from 'conjunction-core';
+import type { ConjunctionEvent, OrbitRegime } from 'conjunction-core';
+
+/** Explicit sentinel baked by the script when SATCAT has no usable row. */
+export const UNKNOWN_REGIME = 'unknown';
+export type BakedRegime = OrbitRegime | typeof UNKNOWN_REGIME;
+
+/** A baked record: a conjunction plus its provenance and pre-classified regimes. */
+export type BakedConjunction = ConjunctionEvent & {
+  sources?: string[];
+  regime1?: BakedRegime;
+  regime2?: BakedRegime;
+};
 
 export type DataMode = 'auto' | 'baked' | 'runtime';
 
@@ -31,7 +42,10 @@ export interface BakedSocrates {
   recordCount: number;
   /** Rough size of the full screening run, for the UI's scope disclosure. */
   estimatedTotalRecords?: number | null;
-  conjunctions: ConjunctionEvent[];
+  conjunctions: BakedConjunction[];
+  /** How many records have at least one unclassified object. */
+  regimeUnknownRecords?: number;
+  regimeUnknownObjects?: number;
 }
 
 export interface SourceConfig {
@@ -163,6 +177,36 @@ export function isUpstreamQuiet(baked: BakedSocrates, now: Date = new Date()): b
   return now.getTime() - upstreamMs > UPSTREAM_QUIET_HOURS * 3_600_000;
 }
 
+/**
+ * NORAD id -> regime, read straight from the baked records. No network: this is
+ * what replaced the per-object GP lookups, which cost ~1,838 CelesTrak requests
+ * per visitor and still left most records unclassified behind a 60-object cap.
+ */
+export function regimeIndexOf(baked: BakedSocrates): Map<number, OrbitRegime> {
+  const index = new Map<number, OrbitRegime>();
+  for (const c of baked.conjunctions) {
+    if (c.regime1 !== undefined && c.regime1 !== UNKNOWN_REGIME) {
+      index.set(c.noradId1, c.regime1);
+    }
+    if (c.regime2 !== undefined && c.regime2 !== UNKNOWN_REGIME) {
+      index.set(c.noradId2, c.regime2);
+    }
+  }
+  return index;
+}
+
+/**
+ * estimatedTotalRecords is derived from file size / mean row length, so it is
+ * good to roughly two significant figures at best. Rendering "~149,751" would
+ * claim precision the method does not support; round to the nearest 1,000.
+ */
+export function roundEstimate(total: number | null | undefined): number | null {
+  if (total === null || total === undefined || !Number.isFinite(total)) {
+    return null;
+  }
+  return Math.round(total / 1000) * 1000;
+}
+
 /** Human-facing scope statement. The app must never imply completeness. */
 export function scopeDisclosure(
   baked: BakedSocrates,
@@ -170,7 +214,7 @@ export function scopeDisclosure(
 ): { shown: number; total: number | null; perFile: number } {
   return {
     shown: baked.recordCount,
-    total: baked.estimatedTotalRecords ?? null,
+    total: roundEstimate(baked.estimatedTotalRecords),
     perFile,
   };
 }

@@ -21,6 +21,8 @@ export {
   eciDistance,
   interpolateStateAt,
   classifyOrbitRegime,
+  classifyOrbitRegimeFromCatalog,
+  regimeFromPeriodAndEccentricity,
   getSunDirectionEci,
   getEarthRotationRadians,
   sharesOrbitSolution,

@@ -46,6 +46,10 @@ export interface Dictionary {
     readonly shown: (visible: number, total: number) => string;
     /** Shown when filters match nothing in the baked subset. */
     readonly noMatchesInSubset: string;
+    /** Shown when the regime filter has no baked data to work with. */
+    readonly regimeUnavailable: string;
+    /** Count of records shown despite an unclassified object. */
+    readonly regimeUnknownShown: (count: number) => string;
   };
   readonly tooltips: {
     readonly regime: string;
@@ -178,6 +182,11 @@ const en: Dictionary = {
     noMatchesInSubset:
       'No conjunctions match these filters in the baked subset. Matching events may ' +
       'exist in the full SOCRATES screening run.',
+    regimeUnavailable:
+      'Regime filtering needs the pre-built data file and is unavailable on live-fetched data.',
+    regimeUnknownShown: (count) =>
+      `${count} record${count === 1 ? '' : 's'} include an object missing from the ` +
+      'satellite catalogue; they are shown regardless of the regime filter.',
   },
   tooltips: {
     regime:
@@ -335,6 +344,12 @@ const es: Dictionary = {
     noMatchesInSubset:
       'Ninguna conjunción coincide con estos filtros en el subconjunto incluido. Pueden ' +
       'existir eventos coincidentes en el análisis completo de SOCRATES.',
+    regimeUnavailable:
+      'El filtro por régimen orbital requiere el archivo de datos precompilado y no está ' +
+      'disponible con datos obtenidos en vivo.',
+    regimeUnknownShown: (count) =>
+      `${count} registro${count === 1 ? '' : 's'} incluyen un objeto ausente del catálogo ` +
+      'de satélites; se muestran independientemente del filtro por régimen.',
   },
   tooltips: {
     regime:

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifyOrbitRegime,
+  classifyOrbitRegimeFromCatalog,
+  regimeFromPeriodAndEccentricity,
   eciDistance,
   getEarthRotationRadians,
   getSunDirectionEci,
@@ -240,5 +242,54 @@ describe('sharesOrbitSolution', () => {
 
   it('is true for an element set compared with itself', () => {
     expect(sharesOrbitSolution(PIECE_A, PIECE_A)).toBe(true);
+  });
+});
+
+describe('regime boundaries', () => {
+  /**
+   * Boundaries are GRAZE's own convention, defined once in analysis.ts:
+   *   HEO e > 0.25 | LEO period < 225 | MEO 225..1400 | GEO > 1400 (min)
+   * Both entry points must agree on them, so both are exercised here.
+   */
+  const catalog = (periodMinutes: number, apogeeKm: number, perigeeKm: number) =>
+    classifyOrbitRegimeFromCatalog({ periodMinutes, apogeeKm, perigeeKm });
+
+  it('places the LEO/MEO boundary at 225 minutes', () => {
+    expect(regimeFromPeriodAndEccentricity(224.999, 0)).toBe('LEO');
+    expect(regimeFromPeriodAndEccentricity(225, 0)).toBe('MEO');
+  });
+
+  it('places the MEO/GEO boundary at 1400 minutes', () => {
+    expect(regimeFromPeriodAndEccentricity(1400, 0)).toBe('MEO');
+    expect(regimeFromPeriodAndEccentricity(1400.001, 0)).toBe('GEO');
+  });
+
+  it('treats eccentricity > 0.25 as HEO regardless of period', () => {
+    expect(regimeFromPeriodAndEccentricity(0.25, 0.25)).toBe('LEO'); // at, not over
+    expect(regimeFromPeriodAndEccentricity(100, 0.2500001)).toBe('HEO');
+    expect(regimeFromPeriodAndEccentricity(1500, 0.9)).toBe('HEO');
+  });
+
+  it('derives eccentricity from apsides for catalogue rows', () => {
+    // Circular LEO: apogee == perigee -> e = 0.
+    expect(catalog(96, 400, 400)).toBe('LEO');
+    // Molniya-like: very eccentric, ~718 min -> HEO wins over period.
+    expect(catalog(718, 39900, 500)).toBe('HEO');
+    // Near-circular GEO.
+    expect(catalog(1436, 35786, 35786)).toBe('GEO');
+    // Near-circular MEO (GPS-like, ~718 min).
+    expect(catalog(718, 20200, 20180)).toBe('MEO');
+  });
+
+  it('agrees with the element-set path at the same period', () => {
+    // 1440 / meanMotion = period; pick meanMotion for exactly 225 min.
+    const elements = { ...ISS_LIKE, MEAN_MOTION: 1440 / 225, ECCENTRICITY: 0 };
+    expect(classifyOrbitRegime(elements)).toBe(regimeFromPeriodAndEccentricity(225, 0));
+  });
+
+  it('returns null — not a default — when catalogue fields are unusable', () => {
+    expect(catalog(Number.NaN, 400, 400)).toBeNull();
+    expect(catalog(96, Number.NaN, 400)).toBeNull();
+    expect(catalog(0, 400, 400)).toBeNull();
   });
 });

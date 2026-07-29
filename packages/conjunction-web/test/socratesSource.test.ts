@@ -5,6 +5,7 @@ import {
   isUpstreamQuiet,
   loadBaked,
   readSourceConfig,
+  roundEstimate,
   scopeDisclosure,
   selectSource,
 } from '../src/data/socratesSource.js';
@@ -293,12 +294,35 @@ describe('scopeDisclosure', () => {
     const baked = bakedFixture({ recordCount: 1389, estimatedTotalRecords: 149500 });
     expect(scopeDisclosure(baked, 1000)).toEqual({
       shown: 1389,
-      total: 149500,
+      // Rounded: the total is a size-derived estimate, not a count.
+      total: 150000,
       perFile: 1000,
     });
   });
 
   it('tolerates an unknown total', () => {
     expect(scopeDisclosure(bakedFixture({ recordCount: 5 }), 1000).total).toBeNull();
+  });
+});
+
+describe('roundEstimate', () => {
+  /**
+   * estimatedTotalRecords comes from bytes / mean-row-length. Presenting it as
+   * "~149,751" implies a count; it is an estimate good to ~2 significant figures.
+   */
+  it('rounds to the nearest thousand', () => {
+    expect(roundEstimate(149751)).toBe(150000);
+    expect(roundEstimate(149400)).toBe(149000);
+  });
+
+  it('passes through unknowns as null', () => {
+    expect(roundEstimate(null)).toBeNull();
+    expect(roundEstimate(undefined)).toBeNull();
+    expect(roundEstimate(Number.NaN)).toBeNull();
+  });
+
+  it('feeds the disclosure a rounded total', () => {
+    const baked = bakedFixture({ recordCount: 1389, estimatedTotalRecords: 149751 });
+    expect(scopeDisclosure(baked, 1000).total).toBe(150000);
   });
 });

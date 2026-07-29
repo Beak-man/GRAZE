@@ -76,6 +76,18 @@ const SOURCE_FILES = {
   maxProb: 'sort-maxProb.csv',
 };
 
+/**
+ * CelesTrak's satellite catalogue — ONE request covering every object, used to
+ * bake orbit regimes in. Verified 2026-07-29: 6,687,967 bytes, 70,122 records
+ * including 124 six-digit NORAD IDs (max 100,147), Range and ETag both
+ * supported, and it carries PERIOD / APOGEE / PERIGEE / INCLINATION per object.
+ *
+ * Doing this per object at runtime is what this replaces: the union references
+ * ~1,838 unique objects, so classifying in the browser meant ~1,838 CelesTrak
+ * requests per visitor.
+ */
+const SATCAT_URL = 'https://celestrak.org/pub/satcat.csv';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** CelesTrak blocks anonymous automated clients; never send a default/absent UA. */
@@ -157,11 +169,12 @@ export async function fetchCsv({
   backoffMs = BASE_BACKOFF_MS,
   rangeBytes = RANGE_BYTES,
 }) {
-  const headers = {
-    'User-Agent': userAgent,
-    Accept: 'text/csv,*/*',
-    Range: `bytes=0-${rangeBytes - 1}`,
-  };
+  const headers = { 'User-Agent': userAgent, Accept: 'text/csv,*/*' };
+  // rangeBytes === null means "whole file" — SATCAT needs every row, because
+  // the ids we look up are scattered throughout it.
+  if (rangeBytes !== null) {
+    headers.Range = `bytes=0-${rangeBytes - 1}`;
+  }
   // Conditional headers apply to the whole entity; a 304 means our copy of the
   // entity is current, which is exactly what we want to know before re-ranging.
   if (meta.etag) {
@@ -209,6 +222,59 @@ export async function fetchCsv({
 export function totalBytesFrom(contentRange) {
   const match = /\/(\d+)\s*$/.exec(contentRange ?? '');
   return match ? Number(match[1]) : null;
+}
+
+/**
+ * Parse SATCAT into a NORAD id -> regime map. Rows we cannot classify are
+ * simply absent, so callers record an explicit "unknown" rather than guessing.
+ */
+export function buildRegimeIndex(csv, classify) {
+  const lines = csv.split('\n');
+  const header = (lines[0] ?? '').trim().split(',');
+  const col = (name) => header.indexOf(name);
+  const idCol = col('NORAD_CAT_ID');
+  const periodCol = col('PERIOD');
+  const apogeeCol = col('APOGEE');
+  const perigeeCol = col('PERIGEE');
+  const index = new Map();
+  if (idCol === -1 || periodCol === -1 || apogeeCol === -1 || perigeeCol === -1) {
+    throw new Error('SATCAT is missing NORAD_CAT_ID/PERIOD/APOGEE/PERIGEE columns');
+  }
+  for (let i = 1; i < lines.length; i++) {
+    const row = lines[i].split(',');
+    const id = Number(row[idCol]);
+    if (!Number.isFinite(id)) {
+      continue;
+    }
+    const regime = classify({
+      periodMinutes: Number(row[periodCol]),
+      apogeeKm: Number(row[apogeeCol]),
+      perigeeKm: Number(row[perigeeCol]),
+    });
+    if (regime !== null) {
+      index.set(id, regime);
+    }
+  }
+  return index;
+}
+
+/** Explicit sentinel: the object is absent from SATCAT or unclassifiable. */
+export const UNKNOWN_REGIME = 'unknown';
+
+/** Attach baked regimes to every record. Never defaults silently. */
+export function applyRegimes(conjunctions, regimeIndex) {
+  let unknownRecords = 0;
+  const unknownObjects = new Set();
+  for (const c of conjunctions) {
+    const r1 = regimeIndex.get(c.noradId1) ?? UNKNOWN_REGIME;
+    const r2 = regimeIndex.get(c.noradId2) ?? UNKNOWN_REGIME;
+    c.regime1 = r1;
+    c.regime2 = r2;
+    if (r1 === UNKNOWN_REGIME) unknownObjects.add(c.noradId1);
+    if (r2 === UNKNOWN_REGIME) unknownObjects.add(c.noradId2);
+    if (r1 === UNKNOWN_REGIME || r2 === UNKNOWN_REGIME) unknownRecords++;
+  }
+  return { unknownRecords, unknownObjects: unknownObjects.size };
 }
 
 /** Stable identity for deduplication across the two orderings. */
@@ -289,7 +355,10 @@ async function loadParser(log) {
   if (typeof core.parseSocratesCsv !== 'function') {
     throw new Error('conjunction-core does not export parseSocratesCsv');
   }
-  return core.parseSocratesCsv;
+  if (typeof core.classifyOrbitRegimeFromCatalog !== 'function') {
+    throw new Error('conjunction-core does not export classifyOrbitRegimeFromCatalog');
+  }
+  return core;
 }
 
 export async function main({
@@ -309,7 +378,8 @@ export async function main({
 
   try {
     const userAgent = buildUserAgent(await packageVersion(), contact);
-    const parseSocratesCsv = await loadParser(log);
+    const core = await loadParser(log);
+    const { parseSocratesCsv, classifyOrbitRegimeFromCatalog } = core;
     const storedMeta = await readMeta(metaPath);
 
     /*
@@ -399,11 +469,61 @@ export async function main({
       return 0;
     }
 
+    /*
+     * Orbit regimes, baked from ONE bulk request. Previously the browser did
+     * this per object, which meant ~1,838 CelesTrak requests per visitor.
+     * SATCAT is a third independently-validated source: it can 304 while the
+     * SOCRATES files change, or vice versa.
+     */
+    const satMeta = outputExists ? (storedMeta.satcat ?? {}) : {};
+    log.log?.(`Fetching satcat from ${SATCAT_URL}`);
+    if (satMeta.etag || satMeta.lastModified) {
+      log.log?.('  satcat: sending conditional headers');
+    }
+    let regimeIndex = null;
+    const satResult = await fetchCsv({
+      url: SATCAT_URL,
+      userAgent,
+      meta: satMeta,
+      fetchImpl,
+      log,
+      backoffMs,
+      rangeBytes: null,
+    });
+    if (satResult.status === 304) {
+      log.log?.('  satcat: 304 Not Modified — reusing regimes from the cached payload');
+      regimeIndex = new Map();
+      for (const c of previous?.conjunctions ?? []) {
+        if (c.regime1 && c.regime1 !== UNKNOWN_REGIME) regimeIndex.set(c.noradId1, c.regime1);
+        if (c.regime2 && c.regime2 !== UNKNOWN_REGIME) regimeIndex.set(c.noradId2, c.regime2);
+      }
+      nextMeta.satcat = satMeta;
+      sourceMeta.satcat = previous?.sources?.satcat ?? { url: SATCAT_URL, lastModified: null };
+    } else {
+      regimeIndex = buildRegimeIndex(satResult.csv, classifyOrbitRegimeFromCatalog);
+      log.log?.(`  satcat: ${satResult.status} — ${regimeIndex.size} objects classified`);
+      nextMeta.satcat = { etag: satResult.etag, lastModified: satResult.lastModified };
+      sourceMeta.satcat = {
+        url: SATCAT_URL,
+        lastModified: satResult.lastModified
+          ? new Date(satResult.lastModified).toISOString()
+          : null,
+        recordCount: regimeIndex.size,
+      };
+    }
+
     const payload = buildPayload({
       perSource,
       sourceMeta,
       estimatedTotalRecords: estimatedTotalRecords ?? previous?.estimatedTotalRecords ?? null,
     });
+    const regimeStats = applyRegimes(payload.conjunctions, regimeIndex);
+    payload.regimeUnknownRecords = regimeStats.unknownRecords;
+    payload.regimeUnknownObjects = regimeStats.unknownObjects;
+    log.log?.(
+      `  regimes: ${payload.recordCount - regimeStats.unknownRecords}/${payload.recordCount} ` +
+        `records fully classified (${regimeStats.unknownObjects} objects unknown)`,
+    );
     await writePayloadAtomically(payload, outputPath);
     await writeMeta(nextMeta, metaPath);
 

@@ -8,7 +8,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyRegimes,
   buildPayload,
+  buildRegimeIndex,
   buildUserAgent,
   dropPartialLine,
   extractSocratesEpoch,
@@ -17,6 +19,7 @@ import {
   main,
   readMeta,
   totalBytesFrom,
+  UNKNOWN_REGIME,
   unionConjunctions,
   writeMeta,
   writePayloadAtomically,
@@ -298,12 +301,49 @@ describe('meta persistence', () => {
   });
 });
 
+const NL_ = String.fromCharCode(10);
+/** A minimal but schema-valid SATCAT covering the ids used in CSV above. */
+const SATCAT_STUB = [
+  'OBJECT_NAME,OBJECT_ID,NORAD_CAT_ID,OBJECT_TYPE,OPS_STATUS_CODE,OWNER,LAUNCH_DATE,LAUNCH_SITE,DECAY_DATE,PERIOD,INCLINATION,APOGEE,PERIGEE,RCS,DATA_STATUS_CODE,ORBIT_CENTER,ORBIT_TYPE',
+  'ISS,1998-067A,25544,PAY,+,US,1998-11-20,TTMTR,,92.9,51.6,420,410,400,,EA,ORB',
+  'DEB,2020-001B,100001,DEB,+,US,2020-01-01,AFETR,,95.0,51.6,500,480,0.1,,EA,ORB',
+  'SL,2021-002A,47919,PAY,+,US,2021-01-01,AFETR,,95.5,53.0,550,540,5,,EA,ORB',
+  'GL,2021-003A,68098,PAY,+,US,2021-01-01,AFETR,,96.0,53.0,560,550,5,,EA,ORB',
+].join(NL_) + NL_;
+
+/**
+ * Wrap a SOCRATES-focused mock so the SATCAT request also gets a valid
+ * response. Tests that care about SATCAT specifically handle it themselves and
+ * this passthrough never fires.
+ */
+function withSatcat(fetchImpl) {
+  return async (url, init) => {
+    const result = await fetchImpl(url, init);
+    if (url.includes('satcat') && (result === undefined || result.status === undefined)) {
+      return { status: 200, ok: true, text: async () => SATCAT_STUB, headers: new Headers() };
+    }
+    if (url.includes('satcat') && typeof result.text === 'function') {
+      // The caller returned a SOCRATES body for satcat; substitute a real one.
+      const body = await result.text();
+      if (!body.includes('NORAD_CAT_ID,OBJECT_TYPE')) {
+        return {
+          status: result.status === 304 ? 304 : 200,
+          ok: true,
+          text: async () => SATCAT_STUB,
+          headers: result.headers ?? new Headers(),
+        };
+      }
+    }
+    return result;
+  };
+}
+
 /** main() with every side effect redirected into the test's temp dir. */
 function mainOptions(fetchImpl, env = {}) {
   return {
     env: { SOCRATES_MAX_RECORDS: '10', ...env },
     log: silent,
-    fetchImpl,
+    fetchImpl: withSatcat(fetchImpl),
     outputPath: path.join(workDir, 'socrates.json'),
     metaPath: path.join(workDir, '.cache', 'socrates-meta.json'),
     backoffMs: 0,
@@ -366,7 +406,7 @@ describe('main end-to-end with mocked HTTP', () => {
 
     // Validators are tracked per source file — they have distinct ETags.
     const meta = await readMeta(path.join(workDir, '.cache', 'socrates-meta.json'));
-    expect(Object.keys(meta).sort()).toEqual(['maxProb', 'minRange']);
+    expect(Object.keys(meta).sort()).toEqual(['maxProb', 'minRange', 'satcat']);
     expect(meta.minRange).toEqual({
       etag: '"v1"',
       lastModified: 'Mon, 27 Jul 2026 23:00:00 GMT',
@@ -402,10 +442,11 @@ describe('main end-to-end with mocked HTTP', () => {
     };
     expect(await main(mainOptions(notModified))).toBe(0);
 
-    // Two files per run, so the second run's requests are indices 2 and 3.
-    expect(seenHeaders[2]['If-None-Match']).toBe('"v1"');
-    expect(seenHeaders[2]['If-Modified-Since']).toBe('Mon, 27 Jul 2026 23:00:00 GMT');
+    // Three requests per run (minRange, maxProb, satcat), so the second run's
+    // SOCRATES requests are indices 3 and 4.
     expect(seenHeaders[3]['If-None-Match']).toBe('"v1"');
+    expect(seenHeaders[3]['If-Modified-Since']).toBe('Mon, 27 Jul 2026 23:00:00 GMT');
+    expect(seenHeaders[4]['If-None-Match']).toBe('"v1"');
     // And the output was reused untouched — same bytes, same mtime.
     expect(await readFile(out, 'utf8')).toBe(before);
     expect((await stat(out)).mtimeMs).toBe(mtimeBefore);
@@ -464,24 +505,27 @@ describe('conditional requests require an existing output file', () => {
       };
     };
 
+    const warnings = [];
     const code = await main({
       env: { SOCRATES_MAX_RECORDS: '10' },
-      log: silent,
-      fetchImpl,
+      log: { log: () => {}, warn: (m) => warnings.push(m), error: () => {} },
+      fetchImpl: withSatcat(fetchImpl),
       outputPath,
       metaPath,
       backoffMs: 0,
     });
+    if (!existsSync(outputPath)) throw new Error('main failed: ' + warnings.join(' | '));
 
     expect(code).toBe(0);
-    // One request per source file, and NEITHER may carry a validator.
-    expect(seen).toHaveLength(2);
+    // One request per source file plus SATCAT, and NONE may carry a validator.
+    expect(seen).toHaveLength(3);
     for (const headers of seen) {
       expect(headers['If-None-Match']).toBeUndefined();
       expect(headers['If-Modified-Since']).toBeUndefined();
       expect(headers['User-Agent']).toContain('GRAZE/');
-      expect(headers['Range']).toMatch(/^bytes=0-/);
     }
+    // The two SOCRATES files are ranged; SATCAT is fetched whole.
+    expect(seen.filter((h) => h['Range'] !== undefined)).toHaveLength(2);
     // And it actually produced the file the deploy needs.
     expect(existsSync(outputPath)).toBe(true);
     expect(JSON.parse(await readFile(outputPath, 'utf8')).recordCount).toBe(2);
@@ -498,14 +542,16 @@ describe('conditional requests require an existing output file', () => {
       seen.push(init.headers);
       return { status: 304, ok: false, headers: new Headers() };
     };
+    const warnings = [];
     const code = await main({
       env: { SOCRATES_MAX_RECORDS: '10' },
-      log: silent,
-      fetchImpl,
+      log: { log: () => {}, warn: (m) => warnings.push(m), error: () => {} },
+      fetchImpl: withSatcat(fetchImpl),
       outputPath,
       metaPath,
       backoffMs: 0,
     });
+    if (!existsSync(outputPath)) throw new Error('main failed: ' + warnings.join(' | '));
     expect(code).toBe(0);
     expect(seen[0]['If-None-Match']).toBe('"cached-v1"');
   });
@@ -533,7 +579,8 @@ describe('record cap', () => {
     };
     await main(mainOptions(fetchImpl, { SOCRATES_MAX_RECORDS: undefined }));
     const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
-    expect(requested).toBe(2);
+    // minRange + maxProb + satcat
+    expect(requested).toBe(3);
     // With a default of 10 this would cap at 10; the real default is far higher.
     expect(written.recordCount).toBe(40);
   });
@@ -598,5 +645,121 @@ describe('independent per-file validators', () => {
     expect(await main(mainOptions(bothStale))).toBe(0);
     expect(await readFile(out, 'utf8')).toBe(before);
     expect((await stat(out)).mtimeMs).toBe(mtimeBefore);
+  });
+});
+
+describe('SATCAT regime baking', () => {
+  const NL = String.fromCharCode(10);
+  const SATCAT = [
+    'OBJECT_NAME,OBJECT_ID,NORAD_CAT_ID,OBJECT_TYPE,OPS_STATUS_CODE,OWNER,LAUNCH_DATE,LAUNCH_SITE,DECAY_DATE,PERIOD,INCLINATION,APOGEE,PERIGEE,RCS,DATA_STATUS_CODE,ORBIT_CENTER,ORBIT_TYPE',
+    'LEOSAT,2020-001A,25544,PAY,+,US,2020-01-01,AFETR,,92.9,51.6,420,410,5.0,,EA,ORB',
+    'GEOSAT,2020-002A,100001,PAY,+,US,2020-01-01,AFETR,,1436.1,0.1,35800,35780,20.0,,EA,ORB',
+    'MOLNIYA,2020-003A,33333,PAY,+,CIS,2020-01-01,PKMTR,,718.0,63.4,39900,500,10.0,,EA,ORB',
+    'NOFIELDS,2020-004A,44444,PAY,+,US,2020-01-01,AFETR,,,,,,,,EA,ORB',
+  ].join(NL) + NL;
+
+  const classify = (row) => {
+    const RE = 6378.137;
+    const { periodMinutes: p, apogeeKm: a, perigeeKm: q } = row;
+    if (![p, a, q].every(Number.isFinite) || p <= 0) return null;
+    const e = (a + RE - (q + RE)) / (a + RE + q + RE);
+    if (e > 0.25) return 'HEO';
+    if (p < 225) return 'LEO';
+    if (p <= 1400) return 'MEO';
+    return 'GEO';
+  };
+
+  it('indexes the catalogue by NORAD id, including 6-digit ids', () => {
+    const index = buildRegimeIndex(SATCAT, classify);
+    expect(index.get(25544)).toBe('LEO');
+    // 5-digit space exhausted ~2026-07-12, so 6-digit coverage is mandatory.
+    expect(index.get(100001)).toBe('GEO');
+    expect(index.get(33333)).toBe('HEO');
+  });
+
+  it('omits rows with unusable orbital fields rather than defaulting', () => {
+    const index = buildRegimeIndex(SATCAT, classify);
+    expect(index.has(44444)).toBe(false);
+  });
+
+  it('throws if the catalogue schema loses a required column', () => {
+    expect(() => buildRegimeIndex(`OBJECT_NAME,NORAD_CAT_ID${NL}x,1${NL}`, classify)).toThrow(
+      /missing NORAD_CAT_ID\/PERIOD\/APOGEE\/PERIGEE/,
+    );
+  });
+
+  it('marks absent objects explicitly unknown, never silently defaulted', () => {
+    const index = buildRegimeIndex(SATCAT, classify);
+    const records = [
+      { noradId1: 25544, noradId2: 100001 },
+      { noradId1: 25544, noradId2: 44444 },
+      { noradId1: 999999, noradId2: 888888 },
+    ];
+    const stats = applyRegimes(records, index);
+    expect(records[0].regime1).toBe('LEO');
+    expect(records[0].regime2).toBe('GEO');
+    expect(records[1].regime2).toBe(UNKNOWN_REGIME);
+    expect(records[2].regime1).toBe(UNKNOWN_REGIME);
+    expect(stats.unknownRecords).toBe(2);
+    expect(stats.unknownObjects).toBe(3);
+  });
+});
+
+describe('three independently-validated sources', () => {
+  it('fetches SATCAT once per build and tracks its validator separately', async () => {
+    const seen = [];
+    const fetchImpl = async (url, init) => {
+      seen.push({ url, headers: init.headers });
+      if (url.includes('satcat')) {
+        return {
+          status: 200, ok: true,
+          text: async () => [
+            'OBJECT_NAME,OBJECT_ID,NORAD_CAT_ID,OBJECT_TYPE,OPS_STATUS_CODE,OWNER,LAUNCH_DATE,LAUNCH_SITE,DECAY_DATE,PERIOD,INCLINATION,APOGEE,PERIGEE,RCS,DATA_STATUS_CODE,ORBIT_CENTER,ORBIT_TYPE',
+            'A,2020-001A,25544,PAY,+,US,2020-01-01,AFETR,,92.9,51.6,420,410,5.0,,EA,ORB',
+          ].join(String.fromCharCode(10)) + String.fromCharCode(10),
+          headers: new Headers({ etag: '"sat-v1"' }),
+        };
+      }
+      return { status: 206, ok: false, text: async () => CSV, headers: new Headers({ etag: '"soc-v1"' }) };
+    };
+    expect(await main(mainOptions(fetchImpl))).toBe(0);
+
+    // Exactly one SATCAT request — never one per object.
+    const satReqs = seen.filter((r) => r.url.includes('satcat'));
+    expect(satReqs).toHaveLength(1);
+    // And it is a whole-file GET, not ranged.
+    expect(satReqs[0].headers.Range).toBeUndefined();
+    expect(satReqs[0].headers['User-Agent']).toContain('GRAZE/');
+
+    const meta = await readMeta(path.join(workDir, '.cache', 'socrates-meta.json'));
+    expect(Object.keys(meta).sort()).toEqual(['maxProb', 'minRange', 'satcat']);
+    expect(meta.satcat.etag).toBe('"sat-v1"');
+    expect(meta.minRange.etag).toBe('"soc-v1"');
+
+    const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
+    expect(written.conjunctions[0].regime1).toBe('LEO');
+    expect(written).toHaveProperty('regimeUnknownRecords');
+  });
+
+  it('reuses cached regimes when SATCAT alone returns 304', async () => {
+    const satcat = [
+      'OBJECT_NAME,OBJECT_ID,NORAD_CAT_ID,OBJECT_TYPE,OPS_STATUS_CODE,OWNER,LAUNCH_DATE,LAUNCH_SITE,DECAY_DATE,PERIOD,INCLINATION,APOGEE,PERIGEE,RCS,DATA_STATUS_CODE,ORBIT_CENTER,ORBIT_TYPE',
+      'A,2020-001A,25544,PAY,+,US,2020-01-01,AFETR,,92.9,51.6,420,410,5.0,,EA,ORB',
+    ].join(String.fromCharCode(10)) + String.fromCharCode(10);
+    const seed = async (url) =>
+      url.includes('satcat')
+        ? { status: 200, ok: true, text: async () => satcat, headers: new Headers({ etag: '"s1"' }) }
+        : { status: 206, ok: false, text: async () => CSV, headers: new Headers({ etag: '"c1"' }) };
+    await main(mainOptions(seed));
+
+    // SOCRATES changes, SATCAT does not.
+    const mixed = async (url) =>
+      url.includes('satcat')
+        ? { status: 304, ok: false, headers: new Headers() }
+        : { status: 206, ok: false, text: async () => CSV, headers: new Headers({ etag: '"c2"' }) };
+    expect(await main(mainOptions(mixed))).toBe(0);
+    const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
+    // Regimes survived the 304 by being read back out of the previous payload.
+    expect(written.conjunctions[0].regime1).toBe('LEO');
   });
 });

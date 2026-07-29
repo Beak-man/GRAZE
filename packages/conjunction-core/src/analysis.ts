@@ -70,23 +70,83 @@ export function sharesOrbitSolution(a: OrbitalElements, b: OrbitalElements): boo
 export type OrbitRegime = 'LEO' | 'MEO' | 'GEO' | 'HEO';
 
 /**
- * Classify an orbit regime from mean motion and eccentricity:
- * HEO (highly elliptical, e > 0.25) takes precedence, then by period —
- * LEO < 225 min, MEO 225–1400 min, GEO 1400–1500 min. The handful of
- * super-synchronous objects (> 1500 min) are lumped with GEO.
+ * Orbit-regime boundaries, in one place because two callers need them: element
+ * sets (mean motion + eccentricity, from GP) and catalogue rows (period +
+ * apogee/perigee, from SATCAT). These are GRAZE's own conventions, chosen to
+ * match how the regimes are commonly described rather than any single standard:
+ *
+ *   HEO  eccentricity > 0.25          (highly elliptical takes precedence)
+ *   LEO  period < 225 min
+ *   MEO  225 min <= period <= 1400 min
+ *   GEO  period > 1400 min            (super-synchronous lumped in with GEO)
+ *
+ * The GEO floor sits below the true geosynchronous period (~1436 min) so that
+ * near-GEO drift orbits classify as GEO rather than MEO.
  */
-export function classifyOrbitRegime(elements: OrbitalElements): OrbitRegime {
-  if (elements.ECCENTRICITY > 0.25) {
+export const REGIME_MAX_ECCENTRICITY_NON_HEO = 0.25;
+export const REGIME_LEO_MAX_PERIOD_MIN = 225;
+export const REGIME_MEO_MAX_PERIOD_MIN = 1400;
+
+/** Earth equatorial radius, km (WGS-84) — for apogee/perigee to eccentricity. */
+const EARTH_RADIUS_KM = EARTH_EQUATORIAL_RADIUS_KM;
+
+/**
+ * The single decision shared by both classification entry points. Period in
+ * minutes, eccentricity dimensionless.
+ */
+export function regimeFromPeriodAndEccentricity(
+  periodMinutes: number,
+  eccentricity: number,
+): OrbitRegime {
+  if (eccentricity > REGIME_MAX_ECCENTRICITY_NON_HEO) {
     return 'HEO';
   }
-  const periodMinutes = MINUTES_PER_DAY / elements.MEAN_MOTION;
-  if (periodMinutes < 225) {
+  if (periodMinutes < REGIME_LEO_MAX_PERIOD_MIN) {
     return 'LEO';
   }
-  if (periodMinutes <= 1400) {
+  if (periodMinutes <= REGIME_MEO_MAX_PERIOD_MIN) {
     return 'MEO';
   }
   return 'GEO';
+}
+
+/**
+ * Classify an orbit regime from an element set (mean motion + eccentricity).
+ */
+export function classifyOrbitRegime(elements: OrbitalElements): OrbitRegime {
+  return regimeFromPeriodAndEccentricity(
+    MINUTES_PER_DAY / elements.MEAN_MOTION,
+    elements.ECCENTRICITY,
+  );
+}
+
+/**
+ * Classify from a catalogue row (CelesTrak SATCAT: PERIOD, APOGEE, PERIGEE).
+ * Eccentricity is derived from the apsides:
+ *   e = (ra - rp) / (ra + rp),  r = altitude + Earth radius
+ * Returns null when any input is missing or non-finite, so callers can record
+ * an explicit "unknown" rather than defaulting silently.
+ */
+export function classifyOrbitRegimeFromCatalog(row: {
+  periodMinutes: number;
+  apogeeKm: number;
+  perigeeKm: number;
+}): OrbitRegime | null {
+  const { periodMinutes, apogeeKm, perigeeKm } = row;
+  if (
+    !Number.isFinite(periodMinutes) ||
+    !Number.isFinite(apogeeKm) ||
+    !Number.isFinite(perigeeKm) ||
+    periodMinutes <= 0
+  ) {
+    return null;
+  }
+  const ra = apogeeKm + EARTH_RADIUS_KM;
+  const rp = perigeeKm + EARTH_RADIUS_KM;
+  if (ra + rp <= 0) {
+    return null;
+  }
+  return regimeFromPeriodAndEccentricity(periodMinutes, (ra - rp) / (ra + rp));
 }
 
 const DEG_TO_RAD = Math.PI / 180;

@@ -148,6 +148,9 @@
         padding: 2px 4px;
       }
       #filter-count { color: var(--muted); margin-left: auto; }
+      .filter-note { color: var(--muted); font-size: 11px; font-style: italic; }
+      #regime-filters.disabled { opacity: 0.5; }
+      #regime-filters.disabled label { cursor: not-allowed; }
 
       #table-container { flex: 1; overflow-y: auto; min-height: 120px; }
       .table-message { padding: 14px; color: var(--muted); }
@@ -528,6 +531,10 @@
               <option value="1e-4">&gt; 1e-4</option>
             </select>
             <span id="filter-count"></span>
+          </div>
+          <div class="filter-row">
+            <span id="regime-unavailable" class="filter-note hidden"></span>
+            <span id="regime-unknown" class="filter-note hidden"></span>
           </div>
         </div>
         <div id="table-container">

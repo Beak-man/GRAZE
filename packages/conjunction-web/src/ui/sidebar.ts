@@ -49,6 +49,10 @@ export class Sidebar {
   private selectedKey: string | null = null;
   /** True while a load-failure message replaces the table (see showMessage). */
   private messageActive = false;
+  /** Records whose regime could not be determined from SATCAT. */
+  private regimeUnknownRecords = 0;
+  /** False when no baked regimes exist at all (runtime/local fallback). */
+  private regimesAvailable = true;
 
   constructor(private readonly onSelect: (event: ConjunctionEvent) => void) {
     this.table = requireElement<HTMLTableElement>('conjunctions');
@@ -70,10 +74,45 @@ export class Sidebar {
     this.render();
   }
 
-  /** Record an object's orbit regime as GP classifications arrive. */
-  setRegime(noradId: number, regime: OrbitRegime): void {
-    this.regimes.set(noradId, regime);
+  /**
+   * Install the regimes baked into the data file. One call, no network — this
+   * replaced per-object GP lookups at runtime.
+   */
+  setBakedRegimes(index: Map<number, OrbitRegime>, unknownRecords: number): void {
+    this.regimes.clear();
+    for (const [id, regime] of index) {
+      this.regimes.set(id, regime);
+    }
+    this.regimeUnknownRecords = unknownRecords;
+    this.regimesAvailable = true;
+    this.setRegimeControlsEnabled(true);
     this.render();
+  }
+
+  /**
+   * No baked regimes (runtime fallback or the bundled dev snapshot). The filter
+   * is disabled with a visible reason rather than left as a control that
+   * silently does nothing.
+   */
+  setRegimesUnavailable(): void {
+    this.regimes.clear();
+    this.regimeUnknownRecords = 0;
+    this.regimesAvailable = false;
+    this.setRegimeControlsEnabled(false);
+    this.render();
+  }
+
+  private setRegimeControlsEnabled(enabled: boolean): void {
+    const row = document.getElementById('regime-filters');
+    row?.classList.toggle('disabled', !enabled);
+    for (const box of document.querySelectorAll<HTMLInputElement>('#regime-filters input')) {
+      box.disabled = !enabled;
+    }
+    const note = document.getElementById('regime-unavailable');
+    if (note !== null) {
+      note.classList.toggle('hidden', enabled);
+      note.textContent = enabled ? '' : t().filters.regimeUnavailable;
+    }
   }
 
   /** Visually mark a row as the active selection. */
@@ -154,6 +193,17 @@ export class Sidebar {
     this.container.querySelector('.table-message')?.remove();
     const visible = this.filteredEvents();
     this.filterCount.textContent = t().filters.shown(visible.length, this.events.length);
+    // Unknown-regime records are SHOWN, not hidden — hiding them would be an
+    // invisible omission, the same failure the truncation disclosure avoids.
+    // Saying how many keeps that judgement with the reader.
+    const unknownNote = document.getElementById('regime-unknown');
+    if (unknownNote !== null) {
+      const show = this.regimesAvailable && this.regimeUnknownRecords > 0;
+      unknownNote.classList.toggle('hidden', !show);
+      unknownNote.textContent = show
+        ? t().filters.regimeUnknownShown(this.regimeUnknownRecords)
+        : '';
+    }
     this.table.replaceChildren(this.buildHead(), this.buildBody(visible));
     // A zero-result filter is ambiguous: it may mean "no such conjunction" or
     // "none inside the baked subset". Say which, rather than showing an empty
