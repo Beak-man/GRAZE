@@ -4,6 +4,7 @@ import {
   dataEpochOf,
   isUpstreamQuiet,
   loadBaked,
+  perFileCount,
   readSourceConfig,
   roundEstimate,
   scopeDisclosure,
@@ -324,5 +325,34 @@ describe('roundEstimate', () => {
   it('feeds the disclosure a rounded total', () => {
     const baked = bakedFixture({ recordCount: 1389, estimatedTotalRecords: 149751 });
     expect(scopeDisclosure(baked, 1000).total).toBe(150000);
+  });
+});
+
+describe('perFileCount', () => {
+  /**
+   * Regression: `sources` also carries satcat (the regime catalogue, ~68k rows).
+   * Taking the max across all of them made the disclosure read "the 68081
+   * closest approaches" instead of 1000.
+   */
+  const withSources = () =>
+    bakedFixture({
+      recordCount: 1389,
+      sources: {
+        minRange: { url: 'u/min', lastModified: null, recordCount: 1000 },
+        maxProb: { url: 'u/max', lastModified: null, recordCount: 1000 },
+        satcat: { url: 'u/satcat', lastModified: null, recordCount: 68081 },
+      },
+    });
+
+  it('counts only the SOCRATES orderings, never the catalogue', () => {
+    expect(perFileCount(withSources())).toBe(1000);
+  });
+
+  it('feeds the disclosure the ordering count', () => {
+    expect(scopeDisclosure(withSources()).perFile).toBe(1000);
+  });
+
+  it('is zero when no ordering metadata exists', () => {
+    expect(perFileCount(bakedFixture())).toBe(0);
   });
 });

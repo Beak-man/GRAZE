@@ -207,10 +207,23 @@ export function roundEstimate(total: number | null | undefined): number | null {
   return Math.round(total / 1000) * 1000;
 }
 
+/**
+ * The two SOCRATES orderings the disclosure describes. `sources` also carries
+ * satcat, which is the regime catalogue and NOT a conjunction ordering — mixing
+ * it in made the disclosure claim "the 68081 closest approaches".
+ */
+const SOCRATES_ORDERINGS = ['minRange', 'maxProb'] as const;
+
+/** How many rows were taken from each SOCRATES ordering. */
+export function perFileCount(baked: BakedSocrates): number {
+  const counts = SOCRATES_ORDERINGS.map((key) => baked.sources?.[key]?.recordCount ?? 0);
+  return Math.max(0, ...counts);
+}
+
 /** Human-facing scope statement. The app must never imply completeness. */
 export function scopeDisclosure(
   baked: BakedSocrates,
-  perFile: number,
+  perFile: number = perFileCount(baked),
 ): { shown: number; total: number | null; perFile: number } {
   return {
     shown: baked.recordCount,
