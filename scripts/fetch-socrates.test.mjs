@@ -145,7 +145,7 @@ describe('buildPayload', () => {
       estimatedTotalRecords: 149500,
       now: new Date('2026-07-29T00:00:00Z'),
     });
-    expect(p.schemaVersion).toBe(5);
+    expect(p.schemaVersion).toBe(6);
     expect(p.generatedAt).toBe('2026-07-29T00:00:00.000Z');
     expect(p.estimatedTotalRecords).toBe(149500);
     expect(p.sources).toEqual(sourceMeta);
@@ -462,7 +462,7 @@ describe('main end-to-end with mocked HTTP', () => {
     expect(await main(mainOptions(fetchImpl))).toBe(0);
 
     const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
-    expect(written.schemaVersion).toBe(5);
+    expect(written.schemaVersion).toBe(6);
     // Both files return the same CSV here, so the union dedups to 2 records.
     expect(written.recordCount).toBe(2);
     expect(written.conjunctions[0].sources.sort()).toEqual(['maxProb', 'minRange']);
@@ -909,7 +909,7 @@ describe('schema upgrades force a rebuild', () => {
     expect(await main(mainOptions(allStale))).toBe(0);
 
     const after = JSON.parse(await readFile(out, 'utf8'));
-    expect(after.schemaVersion).toBe(5);
+    expect(after.schemaVersion).toBe(6);
     expect(after.conjunctions[0]).toHaveProperty('regime1');
   });
 });

@@ -55,8 +55,16 @@ reappears in the web package.
 `GROUP=active` excludes debris, rocket bodies, analyst tracks and decayed
 payloads. Measured on a 1360-record bake: 203 of 1575 objects absent, so **405
 rows (29.8%) cannot be visualized**. Those rows still carry valid SOCRATES
-figures — only the 3D view needs elements. Widening coverage means adding group
-names to `GP_GROUPS`, one request per entry per build.
+figures — only the 3D view needs elements, and the **Visualizable only** filter
+hides them on request.
+
+**There is no `socrates` group.** CelesTrak answers `GROUP=socrates` with
+`Invalid query: ... (GROUP=socrates not found)`, verified 2026-07-30, and no
+group returns the full catalogue — `SPECIAL=gpz`/`gpz-plus` are the GEO
+Protected Zone. The 212 misses are 138 debris (only 41 of them inside the three
+published debris-cloud groups), 35 rocket bodies and 39 inactive payloads, so
+widening means adding several names to `GP_GROUPS`, one request per entry per
+build.
 
 ## Dev and production are identical
 

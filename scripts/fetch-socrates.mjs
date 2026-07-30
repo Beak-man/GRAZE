@@ -72,13 +72,16 @@ const REPO_URL = 'https://github.com/Beak-man/GRAZE';
  * 3 -> 4: payload gained the analyst/absent provenance split.
  * 4 -> 5: payload gained `gp` coverage metadata; GP elements are baked into a
  *         sibling gp-active.json so the client never calls CelesTrak.
+ * 5 -> 6: records gained `plottable` — whether BOTH objects have baked
+ *         elements — so the "visualizable only" filter works before the lazily
+ *         loaded gp-active.json has been fetched.
  *
  * The "nothing changed, reuse the file" shortcut below is gated on this, so a
  * bump forces a rebuild. Without that gate the shortcut happily served a
  * payload predating the new fields forever, because SOCRATES itself had not
  * changed — which is exactly what happened on the first regime deploy.
  */
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 /** Independent of SCHEMA_VERSION: gp-active.json is its own file. */
 const GP_SCHEMA_VERSION = 1;
 const MAX_ATTEMPTS = 3;
@@ -122,12 +125,20 @@ const SATCAT_URL = 'https://celestrak.org/pub/satcat.csv';
  * gp.php?CATNR=<id> per selected object, which is the last runtime CelesTrak
  * dependency and is now gone.
  *
- * `active` does NOT cover debris, rocket bodies, analyst tracks or decayed
- * payloads. Measured against the current bake that leaves ~30% of rows without
- * elements, and those rows say so in the UI rather than silently failing. If
- * that coverage needs widening, add group names here — the fetch loops over
- * this list, so it stays a config change, and each entry costs exactly one
- * request per build.
+ * `active` covers 1192/1404 referenced objects (84.9%) on the 2026-07-30 bake,
+ * leaving 458 of 1374 rows (33.3%) unplottable. It excludes debris, rocket
+ * bodies and inactive payloads, which is much of what SOCRATES screens.
+ *
+ * **There is no `socrates` group** — CelesTrak answers `GROUP=socrates` with
+ * `Invalid query: "GROUP=socrates&FORMAT=json" (GROUP=socrates not found)`,
+ * verified 2026-07-30 — and no group returns the full catalogue either.
+ * `SPECIAL=gpz`/`gpz-plus` are the GEO Protected Zone, not a complete set. The
+ * 212 misses break down as 138 debris (only 41 of them in the three published
+ * debris-cloud groups), 35 rocket bodies and 39 inactive payloads, so no
+ * available group closes the gap; widening means adding several here.
+ *
+ * The fetch loops over this list, so that stays a config change, and each entry
+ * costs exactly one request per build.
  */
 const GP_GROUPS = ['active'];
 const gpGroupUrl = (group) =>
@@ -508,6 +519,26 @@ export function buildGpIndex(gpJson, wantedIds) {
   return { records, matched, catalogSize: gpJson.length, missingIds };
 }
 
+/**
+ * Stamp each conjunction with whether BOTH its objects have baked elements, and
+ * return how many are plottable.
+ *
+ * Baked per record rather than derived in the browser because gp-active.json is
+ * fetched lazily on the first selection — the "visualizable only" filter has to
+ * work before a single row has been clicked, and eagerly loading ~500 KiB of
+ * elements just to grey out rows would undo the lazy-loading the split exists
+ * for.
+ */
+export function markPlottable(conjunctions, records) {
+  let plottable = 0;
+  for (const c of conjunctions) {
+    const ok = records[c.noradId1] !== undefined && records[c.noradId2] !== undefined;
+    c.plottable = ok;
+    if (ok) plottable++;
+  }
+  return plottable;
+}
+
 /** Metadata wrapper for the GP file, mirroring the SOCRATES payload's shape. */
 export function buildGpPayload({ index, sourceUrl, lastModified, requestedCount, now = new Date() }) {
   return {
@@ -652,17 +683,33 @@ export async function main({
     // gp-active.json is absent, and skipping would leave the app with no
     // elements at all. Rebuild unless BOTH outputs are present and current.
     const gpOutputExists = existsSync(gpOutputPath);
+    /*
+     * The shortcut must also notice a CONFIG change, not just an upstream one.
+     * Editing GP_GROUPS changes which elements we bake, but SOCRATES is
+     * unchanged, so without this the script reports "current" and quietly keeps
+     * serving the old group forever — the same trap the schemaVersion gate
+     * exists to close.
+     */
+    const wantedGpUrl = GP_GROUPS.map(gpGroupUrl).join(' ');
+    const bakedGpUrl = gpOutputExists ? (await readCachedPayload(gpOutputPath))?.sourceUrl : null;
+    const gpSourceChanged = gpOutputExists && bakedGpUrl !== wantedGpUrl;
     if (
       !anyFresh &&
       previous !== null &&
       previous.schemaVersion === SCHEMA_VERSION &&
-      gpOutputExists
+      gpOutputExists &&
+      !gpSourceChanged
     ) {
       log.log?.('  both sources unchanged — existing socrates.json and gp-active.json are current');
       return 0;
     }
     if (!anyFresh && previous !== null && !gpOutputExists) {
       log.log?.('  sources unchanged, but gp-active.json is missing — rebuilding to restore it');
+    }
+    if (gpSourceChanged) {
+      log.log?.(
+        `  GP source changed (${bakedGpUrl ?? 'unknown'} -> ${wantedGpUrl}) — rebuilding elements`,
+      );
     }
     if (!anyFresh && previous !== null) {
       log.log?.(
@@ -799,24 +846,26 @@ export async function main({
       payload.gpObjects = index.matched;
       payload.gpMissingObjects = index.missingIds.length;
       payload.gpRequestedObjects = wantedIds.size;
-      // Rows the UI must present as unavailable: either object lacking elements.
-      let unusable = 0;
-      for (const c of payload.conjunctions) {
-        if (index.records[c.noradId1] === undefined || index.records[c.noradId2] === undefined) {
-          unusable++;
-        }
-      }
-      payload.gpUnusableRecords = unusable;
+      const plottable = markPlottable(payload.conjunctions, index.records);
+      payload.gpUnusableRecords = payload.recordCount - plottable;
       log.log?.(
-        `  gp: ${payload.recordCount - unusable}/${payload.recordCount} conjunctions fully plottable`,
+        `  gp: ${plottable}/${payload.recordCount} conjunctions fully plottable`,
       );
     } else if (existsSync(gpOutputPath)) {
-      log.log?.('  gp: unchanged — reusing the existing gp-active.json and its counts');
+      log.log?.('  gp: unchanged — reusing the existing gp-active.json');
       nextMeta.gp = gpMeta;
-      payload.gpObjects = previous?.gpObjects;
-      payload.gpMissingObjects = previous?.gpMissingObjects;
-      payload.gpRequestedObjects = previous?.gpRequestedObjects;
-      payload.gpUnusableRecords = previous?.gpUnusableRecords;
+      // Recomputed from the file on disk, not copied from the previous payload:
+      // the conjunction set may have changed even when GP did not, and a stale
+      // flag would hide a row the user can actually plot (or vice versa).
+      const existing = (await readCachedPayload(gpOutputPath))?.records ?? {};
+      const plottable = markPlottable(payload.conjunctions, existing);
+      payload.gpObjects = Object.keys(existing).length;
+      payload.gpRequestedObjects = wantedIds.size;
+      payload.gpMissingObjects = wantedIds.size - payload.gpObjects;
+      payload.gpUnusableRecords = payload.recordCount - plottable;
+      log.log?.(
+        `  gp: ${plottable}/${payload.recordCount} conjunctions fully plottable`,
+      );
     } else {
       /*
        * "Not modified" with nothing on disk to reuse. Reachable because gp.php
@@ -842,6 +891,12 @@ export async function main({
       payload.gpMissingObjects = previous?.gpMissingObjects;
       payload.gpRequestedObjects = previous?.gpRequestedObjects;
       payload.gpUnusableRecords = previous?.gpUnusableRecords;
+      // No usable element index: leave `plottable` unset on every record. The
+      // client treats undefined as "unknown" and shows the row, because hiding
+      // a row we merely failed to classify would be a silent omission.
+      for (const c of payload.conjunctions) {
+        delete c.plottable;
+      }
     }
 
     await writePayloadAtomically(payload, outputPath);
