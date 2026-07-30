@@ -378,3 +378,52 @@ describe('unknown-regime disclosure copy', () => {
     }
   });
 });
+
+describe('divergence disclosure copy', () => {
+  const params = {
+    computedRange: '1746.98 km',
+    screenedRange: '15 m',
+    offsetSeconds: 164.4,
+    ageHours1: 48.7,
+    ageHours2: 43.8,
+  };
+
+  it('names the cause and shows both figures, in every language', () => {
+    for (const lang of LANGUAGES) {
+      const badge = translations[lang].infoPanel.divergenceBadge;
+      // The verdict must be legible without reading the paragraph.
+      expect(badge.length).toBeGreaterThan(20);
+      const detail = translations[lang].errors.elementsCannotReproduce(params);
+      // Both values present: hiding ours would leave the badge unexplained,
+      // and hiding SOCRATES' would lose the authoritative figure.
+      expect(detail).toContain('1746.98 km');
+      expect(detail).toContain('15 m');
+      // The signed offset and both element ages justify the verdict.
+      expect(detail).toContain('+164.4');
+      expect(detail).toContain('48.7');
+      expect(detail).toContain('43.8');
+      // The badge owns the warning glyph; the detail must not repeat it.
+      expect(detail).not.toContain('⚠');
+    }
+  });
+
+  it('marks the miss row as disagreeing rather than refined', () => {
+    for (const lang of LANGUAGES) {
+      const p = translations[lang].infoPanel;
+      const diverged = p.missDiverged('1746.98 km', '15 m');
+      expect(diverged).toContain('1746.98 km');
+      expect(diverged).toContain('15 m');
+      // The normal row reads "X (SOCRATES Y)"; the diverged one must not, or a
+      // 1747 km figure would look like a refinement of a 15 m screening.
+      expect(diverged).not.toBe(p.missWithSocrates('1746.98 km', '15 m'));
+    }
+  });
+
+  it('signs a negative offset', () => {
+    const detail = translations.en.errors.elementsCannotReproduce({
+      ...params,
+      offsetSeconds: -4.2,
+    });
+    expect(detail).toContain('-4.2');
+  });
+});

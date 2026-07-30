@@ -1,4 +1,5 @@
 import {
+  assessTcaConsistency,
   computeCloseApproach,
   eciToThreeJs,
   fetchConjunctions,
@@ -388,7 +389,27 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
     }),
   );
 
-  showInfoDetails(event, details, summarizeOrbit(elements1), summarizeOrbit(elements2));
+  // Compare the refined approach against SOCRATES before presenting it. A
+  // disagreement of kilometres against a metres-scale screened miss means the
+  // element sets cannot place these objects at the published TCA — stale
+  // elements across a manoeuvre, not a search failure. The panel then reports
+  // the screened figure and explains the gap instead of passing our number off
+  // as a refinement.
+  const consistency = assessTcaConsistency({
+    computedRangeKm: details.actualMinRange,
+    computedTcaEpochMs: details.actualTcaEpochMs,
+    screenedRangeKm: event.minRange,
+    screenedTca: event.tca,
+    elements1,
+    elements2,
+  });
+  showInfoDetails(
+    event,
+    details,
+    summarizeOrbit(elements1),
+    summarizeOrbit(elements2),
+    consistency,
+  );
   setStatus(() => t().status.showing(event.name1, event.name2));
 }
 

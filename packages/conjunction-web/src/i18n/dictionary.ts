@@ -110,6 +110,14 @@ export interface Dictionary {
     readonly perigee: string;
     readonly period: string;
     readonly missWithSocrates: (actual: string, socrates: string) => string;
+    /**
+     * Used when our elements cannot reproduce the screened event. Shows BOTH
+     * figures — hiding ours would leave the badge unexplained — but marks them
+     * as disagreeing rather than implying a refinement.
+     */
+    readonly missDiverged: (actual: string, socrates: string) => string;
+    /** Badge headline for a divergent computation. */
+    readonly divergenceBadge: string;
     readonly fetchingGp: (id1: number, id2: number) => string;
     readonly propagating: string;
   };
@@ -144,6 +152,17 @@ export interface Dictionary {
     readonly gpNotBaked: (name: string, noradId: number) => string;
     /** gp-active.json itself is missing or unreadable (a deploy problem). */
     readonly gpFileMissing: (detail: string) => string;
+    /**
+     * The baked element sets do not reproduce the screened conjunction — almost
+     * always element staleness on a manoeuvring object, not a search failure.
+     */
+    readonly elementsCannotReproduce: (params: {
+      computedRange: string;
+      screenedRange: string;
+      offsetSeconds: number;
+      ageHours1: number;
+      ageHours2: number;
+    }) => string;
   };
   readonly buttons: {
     readonly retry: string;
@@ -274,6 +293,8 @@ const en: Dictionary = {
     perigee: 'Perigee',
     period: 'Period',
     missWithSocrates: (actual, socrates) => `${actual} (SOCRATES ${socrates})`,
+    missDiverged: (actual, socrates) => `${actual} ✗ vs SOCRATES ${socrates}`,
+    divergenceBadge: 'High divergence: elements likely stale or object manoeuvred',
     fetchingGp: (id1, id2) => `Fetching GP data for ${id1} and ${id2}…`,
     propagating: 'Propagating ±30 min around TCA…',
   },
@@ -322,6 +343,20 @@ const en: Dictionary = {
       `Baked orbital elements could not be loaded (${detail}). This is a deployment ` +
       'problem rather than a missing object: /data/gp-active.json is absent or ' +
       'unreadable, so no conjunction can be visualized until the next build.',
+    elementsCannotReproduce: ({
+      computedRange,
+      screenedRange,
+      offsetSeconds,
+      ageHours1,
+      ageHours2,
+    }) =>
+      `SOCRATES screened this approach at ${screenedRange}; propagating the baked ` +
+      `elements gives ${computedRange} at ${offsetSeconds >= 0 ? '+' : ''}` +
+      `${offsetSeconds.toFixed(1)} s from the published TCA. The element sets are ` +
+      `${ageHours1.toFixed(1)} h and ${ageHours2.toFixed(1)} h old at TCA, and a ` +
+      'manoeuvre inside that span invalidates the propagation. The geometry plotted ' +
+      'is what these elements imply, not the screened event — treat the SOCRATES ' +
+      'figures as authoritative.',
   },
   buttons: {
     retry: 'Retry',
@@ -457,6 +492,8 @@ const es: Dictionary = {
     perigee: 'Perigeo',
     period: 'Período',
     missWithSocrates: (actual, socrates) => `${actual} (SOCRATES ${socrates})`,
+    missDiverged: (actual, socrates) => `${actual} ✗ vs SOCRATES ${socrates}`,
+    divergenceBadge: 'Divergencia alta: elementos probablemente obsoletos u objeto maniobró',
     fetchingGp: (id1, id2) => `Obteniendo datos GP de ${id1} y ${id2}…`,
     propagating: 'Propagando ±30 min alrededor del TCA…',
   },
@@ -506,6 +543,21 @@ const es: Dictionary = {
       `No se pudieron cargar los elementos orbitales incluidos (${detail}). Es un problema ` +
       'de despliegue, no un objeto ausente: /data/gp-active.json falta o no se puede leer, ' +
       'así que ninguna conjunción podrá visualizarse hasta la próxima compilación.',
+    elementsCannotReproduce: ({
+      computedRange,
+      screenedRange,
+      offsetSeconds,
+      ageHours1,
+      ageHours2,
+    }) =>
+      `SOCRATES analizó este acercamiento en ${screenedRange}; al propagar los ` +
+      `elementos incluidos se obtiene ${computedRange} a ` +
+      `${offsetSeconds >= 0 ? '+' : ''}${offsetSeconds.toFixed(1)} s del TCA publicado. ` +
+      `Los conjuntos de elementos tienen ${ageHours1.toFixed(1)} h y ` +
+      `${ageHours2.toFixed(1)} h de antigüedad en el TCA, y una maniobra dentro de ese ` +
+      'intervalo invalida la propagación. La geometría representada es la que implican ' +
+      'estos elementos, no el evento analizado — considera autoritativas las cifras de ' +
+      'SOCRATES.',
   },
   buttons: {
     retry: 'Reintentar',

@@ -219,7 +219,11 @@
         font-size: 12px;
       }
       #info-panel { display: flex; flex-direction: column; }
-      #info-panel-body { flex: 1; min-height: 0; }
+      /* The body scrolls itself rather than overflowing the panel: it is a
+         flex child with min-height 0, so without this its content spills over
+         #data-timestamps instead of clipping. Visible before the consistency
+         notice existed; the extra paragraph just makes it certain. */
+      #info-panel-body { flex: 1; min-height: 0; overflow-y: auto; }
       #data-timestamps {
         flex: none;
         margin-top: 8px;
@@ -267,6 +271,26 @@
       }
       #info-panel .obj1 { color: var(--accent1); }
       #info-panel .obj2 { color: var(--accent2); }
+      /* Shown when the baked elements cannot reproduce the screened event. */
+      #info-panel .tca-warning {
+        margin: 8px 0 0;
+        padding: 8px 10px;
+        border-left: 3px solid #d9a13b;
+        background: #2a2214;
+        color: #e8d5ac;
+        font-size: 11px;
+        line-height: 1.45;
+      }
+      #info-panel .tca-badge {
+        display: block;
+        font-weight: 700;
+        color: #f0c674;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      #info-panel .tca-detail { margin: 5px 0 0; }
+      /* The diverged miss figure must not read as a normal measurement. */
+      #info-panel .miss-diverged { color: #f0c674; }
       #info-panel table { border-collapse: collapse; width: 100%; }
       #info-panel td, #info-panel th {
         padding: 2px 6px 2px 0;

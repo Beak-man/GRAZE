@@ -2,6 +2,7 @@ import type {
   CloseApproachDetails,
   ConjunctionEvent,
   OrbitSummary,
+  TcaConsistency,
 } from 'conjunction-core';
 import {
   formatKm,
@@ -84,6 +85,7 @@ export function showInfoDetails(
   details: CloseApproachDetails,
   summary1: OrbitSummary,
   summary2: OrbitSummary,
+  consistency?: TcaConsistency,
 ): void {
   render(() => {
     const d = t().infoPanel;
@@ -95,11 +97,25 @@ export function showInfoDetails(
     );
 
     const conjunction = document.createElement('table');
+    // When the element sets cannot reproduce the screened event, our computed
+    // miss is a fact about the DATA, not a refinement of the SOCRATES figure.
+    // Reporting it in the miss-distance row would present 1747 km as though it
+    // were an improvement on 15 m, so the row states the screened value and the
+    // disagreement is spelled out below the table instead.
+    const unreproduced = consistency !== undefined && !consistency.reproducesScreenedEvent;
     conjunction.append(
       row(d.tca, formatTca(details.actualTca)),
       row(
         d.missDistance,
-        d.missWithSocrates(formatRange(details.actualMinRange), formatRange(event.minRange)),
+        unreproduced
+          ? Object.assign(document.createElement('span'), {
+              className: 'miss-diverged',
+              textContent: d.missDiverged(
+                formatRange(details.actualMinRange),
+                formatRange(event.minRange),
+              ),
+            })
+          : d.missWithSocrates(formatRange(details.actualMinRange), formatRange(event.minRange)),
       ),
       row(d.relativeSpeed, formatSpeed(details.relativeVelocityAtTca)),
       row(d.maxProbability, formatProbability(event.maxProbability)),
@@ -124,6 +140,28 @@ export function showInfoDetails(
       row(d.period, formatMinutes(summary1.periodMinutes), formatMinutes(summary2.periodMinutes)),
     );
 
-    panel().replaceChildren(heading, conjunction, document.createElement('hr'), perObject);
+    const children: Node[] = [heading, conjunction];
+    if (unreproduced && consistency !== undefined) {
+      const warning = document.createElement('div');
+      warning.className = 'tca-warning';
+      // Badge headline first, so the verdict is legible without reading the
+      // paragraph; the detail below carries the numbers that justify it.
+      const badge = document.createElement('span');
+      badge.className = 'tca-badge';
+      badge.textContent = `⚠ ${d.divergenceBadge}`;
+      const detail = document.createElement('p');
+      detail.className = 'tca-detail';
+      detail.textContent = t().errors.elementsCannotReproduce({
+        computedRange: formatRange(consistency.computedRangeKm),
+        screenedRange: formatRange(consistency.screenedRangeKm),
+        offsetSeconds: consistency.tcaOffsetSeconds,
+        ageHours1: consistency.elementAgeHours1,
+        ageHours2: consistency.elementAgeHours2,
+      });
+      warning.append(badge, detail);
+      children.push(warning);
+    }
+    children.push(document.createElement('hr'), perObject);
+    panel().replaceChildren(...children);
   });
 }
