@@ -21,6 +21,7 @@ import {
   totalBytesFrom,
   UNKNOWN_REGIME,
   unionConjunctions,
+  unknownReasonFor,
   writeMeta,
   writePayloadAtomically,
 } from './fetch-socrates.mjs';
@@ -130,7 +131,7 @@ describe('buildPayload', () => {
       estimatedTotalRecords: 149500,
       now: new Date('2026-07-29T00:00:00Z'),
     });
-    expect(p.schemaVersion).toBe(3);
+    expect(p.schemaVersion).toBe(4);
     expect(p.generatedAt).toBe('2026-07-29T00:00:00.000Z');
     expect(p.estimatedTotalRecords).toBe(149500);
     expect(p.sources).toEqual(sourceMeta);
@@ -398,7 +399,7 @@ describe('main end-to-end with mocked HTTP', () => {
     expect(await main(mainOptions(fetchImpl))).toBe(0);
 
     const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
-    expect(written.schemaVersion).toBe(3);
+    expect(written.schemaVersion).toBe(4);
     // Both files return the same CSV here, so the union dedups to 2 records.
     expect(written.recordCount).toBe(2);
     expect(written.conjunctions[0].sources.sort()).toEqual(['maxProb', 'minRange']);
@@ -703,6 +704,44 @@ describe('SATCAT regime baking', () => {
     expect(stats.unknownRecords).toBe(2);
     expect(stats.unknownObjects).toBe(3);
   });
+
+  it('treats only the 80000-89999 block as analyst-range', () => {
+    // Closed interval, pinned at both edges.
+    expect(unknownReasonFor(79999)).toBe('absent-from-catalog');
+    expect(unknownReasonFor(80000)).toBe('analyst-range');
+    expect(unknownReasonFor(84000)).toBe('analyst-range');
+    expect(unknownReasonFor(89999)).toBe('analyst-range');
+    expect(unknownReasonFor(90000)).toBe('absent-from-catalog');
+  });
+
+  it('never infers analyst provenance from catalog-number magnitude', () => {
+    // The regression this guards: CelesTrak exhausted the 5-digit space in
+    // July 2026, so ordinary objects now carry 6-digit ids. Calling any of
+    // these "analyst" would be a domain error, not a display nit.
+    for (const id of [100000, 199999, 270257, 270368, 999999]) {
+      expect(unknownReasonFor(id)).toBe('absent-from-catalog');
+    }
+  });
+
+  it('splits unknown objects by provenance without touching regime', () => {
+    const records = [
+      { noradId1: 53228, noradId2: 82448 }, // analyst-range companion
+      { noradId1: 62760, noradId2: 270257 }, // expanded-space companion
+      { noradId1: 65642, noradId2: 270257 }, // same object again — counted once
+    ];
+    const stats = applyRegimes(records, new Map([[53228, 'LEO']]));
+    // Provenance is a separate axis: regime stays strictly orbital, so every
+    // one of these is 'unknown' regardless of which reason applies.
+    expect(records.map((r) => r.regime2)).toEqual([
+      UNKNOWN_REGIME,
+      UNKNOWN_REGIME,
+      UNKNOWN_REGIME,
+    ]);
+    expect(stats.unknownObjects).toBe(4);
+    expect(stats.analystObjects).toBe(1);
+    expect(stats.absentObjects).toBe(3);
+    expect(stats.analystObjects + stats.absentObjects).toBe(stats.unknownObjects);
+  });
 });
 
 describe('three independently-validated sources', () => {
@@ -796,7 +835,7 @@ describe('schema upgrades force a rebuild', () => {
     expect(await main(mainOptions(allStale))).toBe(0);
 
     const after = JSON.parse(await readFile(out, 'utf8'));
-    expect(after.schemaVersion).toBe(3);
+    expect(after.schemaVersion).toBe(4);
     expect(after.conjunctions[0]).toHaveProperty('regime1');
   });
 });

@@ -165,6 +165,26 @@ CelesTrak exhausts 5-digit NORAD catalog numbers (~69999) around
 - ALWAYS use satellite.json2satrec() for propagation
 - NEVER use TLE format or satellite.twoline2satrec() anywhere
 
+### A catalog number's magnitude carries no provenance
+Post-transition objects have 6-digit ids, so **a large id means "recent", not
+"analyst"**. The only id range that means anything is the traditional analyst
+block **80000-89999** (uncorrelated tracks — permanently absent from SATCAT by
+design). Everything else that misses the SATCAT join is a valid catalogue
+number our snapshot has not caught up with; ids in the 270000s are ordinary
+expanded-space objects, not analyst objects.
+
+Encoded once, in `unknownReasonFor` (`scripts/fetch-socrates.mjs`), as a closed
+interval with both edges pinned by test. Do not reintroduce an `id > 99999`
+test anywhere — that misclassifies every object catalogued after July 2026.
+
+**Provenance is a separate axis from regime.** `OrbitRegime` stays strictly
+orbital (`LEO | MEO | GEO | HEO`); "analyst" is a catalogue-status fact and
+must never become a regime value, or the regime filter loses a single coherent
+meaning. Objects that miss the join get regime `unknown` and are **shown
+regardless of the regime filter** — `eventPassesFilters` only applies the
+regime gate when both objects are classified. Hiding them would be a silent
+omission of exactly the events least understood.
+
 ## Assets
 - Earth texture: packages/conjunction-web/public/textures/earth.jpg
   Source: NASA Visible Earth BMNG August 2004 (assets.science.nasa.gov)

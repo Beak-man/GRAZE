@@ -60,7 +60,7 @@ const REPO_URL = 'https://github.com/Beak-man/GRAZE';
  * payload predating the new fields forever, because SOCRATES itself had not
  * changed — which is exactly what happened on the first regime deploy.
  */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 1000;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -269,6 +269,32 @@ export function buildRegimeIndex(csv, classify) {
 /** Explicit sentinel: the object is absent from SATCAT or unclassifiable. */
 export const UNKNOWN_REGIME = 'unknown';
 
+/**
+ * The traditional analyst-object block. These are uncorrelated tracks rather
+ * than catalogued objects, so their absence from SATCAT is expected and
+ * permanent.
+ *
+ * This is the ONLY id range that carries any meaning here, and it is a closed
+ * interval on purpose. A large catalog number says nothing about provenance:
+ * CelesTrak exhausted the 5-digit space (~69999) in July 2026, so ordinary
+ * objects now receive 6-digit ids. Treating "id > 99999" as analyst would
+ * misclassify every post-transition object — see the CelesTrak catalog-number
+ * note in CLAUDE.md.
+ */
+const ANALYST_ID_MIN = 80000;
+const ANALYST_ID_MAX = 89999;
+
+/**
+ * Why an object missed the SATCAT join. Provenance, NOT orbit class — this is
+ * deliberately a separate axis from `regime`, which stays strictly orbital
+ * (LEO/MEO/GEO/HEO) so the regime filter keeps one coherent meaning.
+ */
+export function unknownReasonFor(noradId) {
+  return noradId >= ANALYST_ID_MIN && noradId <= ANALYST_ID_MAX
+    ? 'analyst-range'
+    : 'absent-from-catalog';
+}
+
 /** Attach baked regimes to every record. Never defaults silently. */
 export function applyRegimes(conjunctions, regimeIndex) {
   let unknownRecords = 0;
@@ -282,7 +308,16 @@ export function applyRegimes(conjunctions, regimeIndex) {
     if (r2 === UNKNOWN_REGIME) unknownObjects.add(c.noradId2);
     if (r1 === UNKNOWN_REGIME || r2 === UNKNOWN_REGIME) unknownRecords++;
   }
-  return { unknownRecords, unknownObjects: unknownObjects.size };
+  let analystObjects = 0;
+  for (const id of unknownObjects) {
+    if (unknownReasonFor(id) === 'analyst-range') analystObjects++;
+  }
+  return {
+    unknownRecords,
+    unknownObjects: unknownObjects.size,
+    analystObjects,
+    absentObjects: unknownObjects.size - analystObjects,
+  };
 }
 
 /** Stable identity for deduplication across the two orderings. */
@@ -534,9 +569,12 @@ export async function main({
     const regimeStats = applyRegimes(payload.conjunctions, regimeIndex);
     payload.regimeUnknownRecords = regimeStats.unknownRecords;
     payload.regimeUnknownObjects = regimeStats.unknownObjects;
+    payload.regimeAnalystObjects = regimeStats.analystObjects;
+    payload.regimeAbsentObjects = regimeStats.absentObjects;
     log.log?.(
       `  regimes: ${payload.recordCount - regimeStats.unknownRecords}/${payload.recordCount} ` +
-        `records fully classified (${regimeStats.unknownObjects} objects unknown)`,
+        `records fully classified (${regimeStats.unknownObjects} objects unknown: ` +
+        `${regimeStats.analystObjects} analyst-range, ${regimeStats.absentObjects} absent from SATCAT)`,
     );
     await writePayloadAtomically(payload, outputPath);
     await writeMeta(nextMeta, metaPath);
