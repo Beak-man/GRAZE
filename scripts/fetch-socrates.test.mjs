@@ -778,6 +778,13 @@ describe('three independently-validated sources', () => {
     const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
     expect(written.conjunctions[0].regime1).toBe('LEO');
     expect(written).toHaveProperty('regimeUnknownRecords');
+    // End-to-end guard on the provenance split. SATCAT here classifies only
+    // 25544, so 47919, 68098 and 100001 all miss the join. None is analyst —
+    // 100001 in particular is a 6-digit id, and the whole point is that its
+    // magnitude does not make it one.
+    expect(written.regimeUnknownObjects).toBe(3);
+    expect(written.regimeAnalystObjects).toBe(0);
+    expect(written.regimeAbsentObjects).toBe(3);
   });
 
   it('reuses cached regimes when SATCAT alone returns 304', async () => {
