@@ -46,6 +46,21 @@ const OUTPUT_PATH = path.join(
   'data',
   'socrates.json',
 );
+/**
+ * Baked orbital elements, kept out of socrates.json on purpose. Measured: ~422
+ * minified bytes per OMM record, so the ~1.5k objects a bake references come to
+ * ~650 KiB against socrates.json's 365 KiB. Elements are only needed once a row
+ * is clicked, so folding them in would nearly triple the initial download for
+ * data most visitors never touch. Separate file, fetched on first selection.
+ */
+const GP_OUTPUT_PATH = path.join(
+  ROOT,
+  'packages',
+  'conjunction-web',
+  'public',
+  'data',
+  'gp-active.json',
+);
 const META_PATH = path.join(ROOT, '.cache', 'socrates-meta.json');
 const CORE_ENTRY = path.join(ROOT, 'packages', 'conjunction-core', 'dist', 'index.js');
 
@@ -54,13 +69,18 @@ const REPO_URL = 'https://github.com/Beak-man/GRAZE';
 /**
  * 1 -> 2: records gained `sources`, payload gained per-file metadata.
  * 2 -> 3: records gained baked `regime1`/`regime2` from SATCAT.
+ * 3 -> 4: payload gained the analyst/absent provenance split.
+ * 4 -> 5: payload gained `gp` coverage metadata; GP elements are baked into a
+ *         sibling gp-active.json so the client never calls CelesTrak.
  *
  * The "nothing changed, reuse the file" shortcut below is gated on this, so a
  * bump forces a rebuild. Without that gate the shortcut happily served a
  * payload predating the new fields forever, because SOCRATES itself had not
  * changed — which is exactly what happened on the first regime deploy.
  */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
+/** Independent of SCHEMA_VERSION: gp-active.json is its own file. */
+const GP_SCHEMA_VERSION = 1;
 const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 1000;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -95,6 +115,23 @@ const SOURCE_FILES = {
  * requests per visitor.
  */
 const SATCAT_URL = 'https://celestrak.org/pub/satcat.csv';
+
+/**
+ * Bulk GP elements, ONE request per build for the whole group. This is the only
+ * source of orbital elements the app has: the client used to call
+ * gp.php?CATNR=<id> per selected object, which is the last runtime CelesTrak
+ * dependency and is now gone.
+ *
+ * `active` does NOT cover debris, rocket bodies, analyst tracks or decayed
+ * payloads. Measured against the current bake that leaves ~30% of rows without
+ * elements, and those rows say so in the UI rather than silently failing. If
+ * that coverage needs widening, add group names here — the fetch loops over
+ * this list, so it stays a config change, and each entry costs exactly one
+ * request per build.
+ */
+const GP_GROUPS = ['active'];
+const gpGroupUrl = (group) =>
+  `https://celestrak.org/NORAD/elements/gp.php?GROUP=${group}&FORMAT=json`;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -381,10 +418,74 @@ export async function writePayloadAtomically(payload, outputPath = OUTPUT_PATH) 
   if (!payload || payload.recordCount <= 0 || payload.conjunctions.length === 0) {
     throw new Error('refusing to write a payload with no records');
   }
+  await writeJsonAtomically(payload, outputPath);
+}
+
+/** Temp-file + rename, without the conjunction-specific validation above. */
+async function writeJsonAtomically(value, outputPath) {
   await mkdir(path.dirname(outputPath), { recursive: true });
   const temp = `${outputPath}.tmp`;
-  await writeFile(temp, JSON.stringify(payload));
+  await writeFile(temp, JSON.stringify(value));
   await rename(temp, outputPath);
+}
+
+/** Every distinct catalog number the conjunction set refers to. */
+export function conjunctionObjectIds(conjunctions) {
+  const ids = new Set();
+  for (const c of conjunctions) {
+    ids.add(c.noradId1);
+    ids.add(c.noradId2);
+  }
+  return ids;
+}
+
+/**
+ * Join the bulk GP payload against the objects we actually plot, in memory.
+ *
+ * CelesTrak's `active` group is ~11k objects; we keep the ~1.5k that appear in
+ * a conjunction and discard the rest, so the browser never downloads elements
+ * for objects it cannot select. Objects absent from the group (debris, rocket
+ * bodies, analyst tracks, decayed payloads) are simply omitted — there is
+ * deliberately NO per-object fallback request, because that is the ~1,800
+ * requests-per-visitor defect this whole pipeline exists to prevent.
+ */
+export function buildGpIndex(gpJson, wantedIds) {
+  if (!Array.isArray(gpJson)) {
+    throw new Error('bulk GP payload is not a JSON array — is FORMAT=json still honoured?');
+  }
+  const records = {};
+  let matched = 0;
+  for (const record of gpJson) {
+    const id = Number(record?.NORAD_CAT_ID);
+    if (!Number.isFinite(id) || !wantedIds.has(id) || records[id] !== undefined) {
+      continue;
+    }
+    records[id] = record;
+    matched++;
+  }
+  const missingIds = [];
+  for (const id of wantedIds) {
+    if (records[id] === undefined) missingIds.push(id);
+  }
+  return { records, matched, catalogSize: gpJson.length, missingIds };
+}
+
+/** Metadata wrapper for the GP file, mirroring the SOCRATES payload's shape. */
+export function buildGpPayload({ index, sourceUrl, lastModified, requestedCount, now = new Date() }) {
+  return {
+    schemaVersion: GP_SCHEMA_VERSION,
+    generatedAt: now.toISOString(),
+    sourceUrl,
+    sourceLastModified: lastModified ? new Date(lastModified).toISOString() : null,
+    /** Objects a conjunction refers to. */
+    requestedCount,
+    /** Of those, how many the bulk group actually carried. */
+    recordCount: index.matched,
+    /** Size of the upstream group, for context in the build log. */
+    catalogSize: index.catalogSize,
+    /** Id-keyed for O(1) client lookup without building an index. */
+    records: index.records,
+  };
 }
 
 async function loadParser(log) {
@@ -409,6 +510,7 @@ export async function main({
   log = console,
   fetchImpl = fetch,
   outputPath = OUTPUT_PATH,
+  gpOutputPath = GP_OUTPUT_PATH,
   metaPath = META_PATH,
   backoffMs = BASE_BACKOFF_MS,
 } = {}) {
@@ -507,9 +609,22 @@ export async function main({
       }
     }
 
-    if (!anyFresh && previous !== null && previous.schemaVersion === SCHEMA_VERSION) {
-      log.log?.('  both sources unchanged — existing socrates.json is current');
+    // The GP file is a separate artifact, so "sources unchanged" is not enough
+    // to skip the build: CI can restore .cache/ and socrates.json while
+    // gp-active.json is absent, and skipping would leave the app with no
+    // elements at all. Rebuild unless BOTH outputs are present and current.
+    const gpOutputExists = existsSync(gpOutputPath);
+    if (
+      !anyFresh &&
+      previous !== null &&
+      previous.schemaVersion === SCHEMA_VERSION &&
+      gpOutputExists
+    ) {
+      log.log?.('  both sources unchanged — existing socrates.json and gp-active.json are current');
       return 0;
+    }
+    if (!anyFresh && previous !== null && !gpOutputExists) {
+      log.log?.('  sources unchanged, but gp-active.json is missing — rebuilding to restore it');
     }
     if (!anyFresh && previous !== null) {
       log.log?.(
@@ -576,6 +691,87 @@ export async function main({
         `records fully classified (${regimeStats.unknownObjects} objects unknown: ` +
         `${regimeStats.analystObjects} analyst-range, ${regimeStats.absentObjects} absent from SATCAT)`,
     );
+    /*
+     * Orbital elements, baked from ONE bulk request per group. This removes the
+     * last runtime CelesTrak dependency: the client previously called
+     * gp.php?CATNR=<id> for both objects on every conjunction click.
+     */
+    const wantedIds = conjunctionObjectIds(payload.conjunctions);
+    const gpMeta = outputExists && gpOutputExists ? (storedMeta.gp ?? {}) : {};
+    let gpRecords = [];
+    let gpFresh = false;
+    let gpLastModified = null;
+    let gpEtag = null;
+    for (const group of GP_GROUPS) {
+      const url = gpGroupUrl(group);
+      log.log?.(`Fetching gp:${group} from ${url}`);
+      if (gpMeta.etag || gpMeta.lastModified) {
+        log.log?.(`  gp:${group}: sending conditional headers`);
+      }
+      const result = await fetchCsv({
+        url,
+        userAgent,
+        meta: GP_GROUPS.length === 1 ? gpMeta : {},
+        fetchImpl,
+        log,
+        backoffMs,
+        rangeBytes: null,
+      });
+      if (result.status === 304) {
+        log.log?.(`  gp:${group}: 304 Not Modified — keeping the existing gp-active.json`);
+        continue;
+      }
+      gpFresh = true;
+      gpLastModified = result.lastModified ?? gpLastModified;
+      // Only meaningful for a single group; with several, a shared validator
+      // would revalidate the wrong body, so it is deliberately dropped.
+      gpEtag = GP_GROUPS.length === 1 ? result.etag : null;
+      const parsed = JSON.parse(result.csv);
+      if (!Array.isArray(parsed)) {
+        throw new Error(`gp:${group}: expected a JSON array, got ${typeof parsed}`);
+      }
+      gpRecords = gpRecords.concat(parsed);
+      log.log?.(`  gp:${group}: ${result.status} — ${parsed.length} objects in group`);
+    }
+
+    if (gpFresh) {
+      const index = buildGpIndex(gpRecords, wantedIds);
+      const gpPayload = buildGpPayload({
+        index,
+        sourceUrl: GP_GROUPS.map(gpGroupUrl).join(' '),
+        lastModified: gpLastModified,
+        requestedCount: wantedIds.size,
+      });
+      await writeJsonAtomically(gpPayload, gpOutputPath);
+      nextMeta.gp = { etag: gpEtag, lastModified: gpLastModified };
+      const pct = ((100 * index.matched) / wantedIds.size).toFixed(1);
+      log.log?.(
+        `  gp: ${index.matched}/${wantedIds.size} objects have elements (${pct}%); ` +
+          `${index.missingIds.length} absent from ${GP_GROUPS.join('+')} — omitted, never fetched individually`,
+      );
+      payload.gpObjects = index.matched;
+      payload.gpMissingObjects = index.missingIds.length;
+      payload.gpRequestedObjects = wantedIds.size;
+      // Rows the UI must present as unavailable: either object lacking elements.
+      let unusable = 0;
+      for (const c of payload.conjunctions) {
+        if (index.records[c.noradId1] === undefined || index.records[c.noradId2] === undefined) {
+          unusable++;
+        }
+      }
+      payload.gpUnusableRecords = unusable;
+      log.log?.(
+        `  gp: ${payload.recordCount - unusable}/${payload.recordCount} conjunctions fully plottable`,
+      );
+    } else {
+      log.log?.('  gp: unchanged — reusing coverage counts from the cached payload');
+      nextMeta.gp = gpMeta;
+      payload.gpObjects = previous?.gpObjects;
+      payload.gpMissingObjects = previous?.gpMissingObjects;
+      payload.gpRequestedObjects = previous?.gpRequestedObjects;
+      payload.gpUnusableRecords = previous?.gpUnusableRecords;
+    }
+
     await writePayloadAtomically(payload, outputPath);
     await writeMeta(nextMeta, metaPath);
 

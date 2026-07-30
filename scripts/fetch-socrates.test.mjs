@@ -2,7 +2,7 @@
  * Tests for the SOCRATES bake script. Every HTTP interaction is injected and
  * mocked — nothing here may reach CelesTrak.
  */
-import { mkdtemp, readFile, writeFile, mkdir, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -10,8 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyRegimes,
   buildPayload,
+  buildGpIndex,
   buildRegimeIndex,
   buildUserAgent,
+  conjunctionObjectIds,
   dropPartialLine,
   extractSocratesEpoch,
   fetchCsv,
@@ -131,7 +133,7 @@ describe('buildPayload', () => {
       estimatedTotalRecords: 149500,
       now: new Date('2026-07-29T00:00:00Z'),
     });
-    expect(p.schemaVersion).toBe(4);
+    expect(p.schemaVersion).toBe(5);
     expect(p.generatedAt).toBe('2026-07-29T00:00:00.000Z');
     expect(p.estimatedTotalRecords).toBe(149500);
     expect(p.sources).toEqual(sourceMeta);
@@ -317,8 +319,44 @@ const SATCAT_STUB = [
  * response. Tests that care about SATCAT specifically handle it themselves and
  * this passthrough never fires.
  */
-function withSatcat(fetchImpl) {
+/**
+ * Bulk GP stub. Deliberately partial: it carries 25544 and 47919 but omits
+ * 100001 and 68098, so the join's "absent from the group" path is exercised on
+ * every main() test rather than only in the dedicated cases below.
+ */
+const GP_STUB = JSON.stringify([
+  {
+    OBJECT_NAME: 'ISS (ZARYA)', OBJECT_ID: '1998-067A', NORAD_CAT_ID: 25544,
+    EPOCH: '2026-07-29T01:00:00', MEAN_MOTION: 15.5, ECCENTRICITY: 0.0004,
+    INCLINATION: 51.64, RA_OF_ASC_NODE: 100.1, ARG_OF_PERICENTER: 90.2,
+    MEAN_ANOMALY: 270.3, EPHEMERIS_TYPE: 0, CLASSIFICATION_TYPE: 'U',
+    ELEMENT_SET_NO: 999, REV_AT_EPOCH: 40000, BSTAR: 0.0001,
+    MEAN_MOTION_DOT: 1e-5, MEAN_MOTION_DDOT: 0,
+  },
+  {
+    OBJECT_NAME: 'STARLINK-2405', OBJECT_ID: '2021-024A', NORAD_CAT_ID: 47919,
+    EPOCH: '2026-07-29T02:00:00', MEAN_MOTION: 15.06, ECCENTRICITY: 0.0002,
+    INCLINATION: 53.05, RA_OF_ASC_NODE: 200.4, ARG_OF_PERICENTER: 80.5,
+    MEAN_ANOMALY: 100.6, EPHEMERIS_TYPE: 0, CLASSIFICATION_TYPE: 'U',
+    ELEMENT_SET_NO: 999, REV_AT_EPOCH: 20000, BSTAR: 0.00002,
+    MEAN_MOTION_DOT: 2e-6, MEAN_MOTION_DDOT: 0,
+  },
+]);
+
+/** Stub the two bulk sources (SATCAT and GP) so cases only script SOCRATES. */
+function withBulkSources(fetchImpl) {
   return async (url, init) => {
+    if (url.includes('gp.php')) {
+      const scripted = await fetchImpl(url, init);
+      // A case that scripts gp.php explicitly wins; otherwise serve the stub.
+      if (scripted !== undefined && typeof scripted.json === 'function') {
+        return scripted;
+      }
+      if (scripted !== undefined && scripted.status === 304) {
+        return scripted;
+      }
+      return { status: 200, ok: true, text: async () => GP_STUB, headers: new Headers() };
+    }
     const result = await fetchImpl(url, init);
     if (url.includes('satcat') && (result === undefined || result.status === undefined)) {
       return { status: 200, ok: true, text: async () => SATCAT_STUB, headers: new Headers() };
@@ -344,8 +382,9 @@ function mainOptions(fetchImpl, env = {}) {
   return {
     env: { SOCRATES_MAX_RECORDS: '10', ...env },
     log: silent,
-    fetchImpl: withSatcat(fetchImpl),
+    fetchImpl: withBulkSources(fetchImpl),
     outputPath: path.join(workDir, 'socrates.json'),
+    gpOutputPath: path.join(workDir, 'gp-active.json'),
     metaPath: path.join(workDir, '.cache', 'socrates-meta.json'),
     backoffMs: 0,
   };
@@ -399,7 +438,7 @@ describe('main end-to-end with mocked HTTP', () => {
     expect(await main(mainOptions(fetchImpl))).toBe(0);
 
     const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
-    expect(written.schemaVersion).toBe(4);
+    expect(written.schemaVersion).toBe(5);
     // Both files return the same CSV here, so the union dedups to 2 records.
     expect(written.recordCount).toBe(2);
     expect(written.conjunctions[0].sources.sort()).toEqual(['maxProb', 'minRange']);
@@ -407,7 +446,7 @@ describe('main end-to-end with mocked HTTP', () => {
 
     // Validators are tracked per source file — they have distinct ETags.
     const meta = await readMeta(path.join(workDir, '.cache', 'socrates-meta.json'));
-    expect(Object.keys(meta).sort()).toEqual(['maxProb', 'minRange', 'satcat']);
+    expect(Object.keys(meta).sort()).toEqual(['gp', 'maxProb', 'minRange', 'satcat']);
     expect(meta.minRange).toEqual({
       etag: '"v1"',
       lastModified: 'Mon, 27 Jul 2026 23:00:00 GMT',
@@ -443,11 +482,12 @@ describe('main end-to-end with mocked HTTP', () => {
     };
     expect(await main(mainOptions(notModified))).toBe(0);
 
-    // Three requests per run (minRange, maxProb, satcat), so the second run's
-    // SOCRATES requests are indices 3 and 4.
-    expect(seenHeaders[3]['If-None-Match']).toBe('"v1"');
-    expect(seenHeaders[3]['If-Modified-Since']).toBe('Mon, 27 Jul 2026 23:00:00 GMT');
+    // Run 1 makes four requests (minRange, maxProb, satcat, gp). Run 2 stops
+    // after the two SOCRATES 304s, because the unchanged-sources shortcut hits
+    // before satcat and gp — so its pair is indices 4 and 5.
     expect(seenHeaders[4]['If-None-Match']).toBe('"v1"');
+    expect(seenHeaders[4]['If-Modified-Since']).toBe('Mon, 27 Jul 2026 23:00:00 GMT');
+    expect(seenHeaders[5]['If-None-Match']).toBe('"v1"');
     // And the output was reused untouched — same bytes, same mtime.
     expect(await readFile(out, 'utf8')).toBe(before);
     expect((await stat(out)).mtimeMs).toBe(mtimeBefore);
@@ -510,22 +550,24 @@ describe('conditional requests require an existing output file', () => {
     const code = await main({
       env: { SOCRATES_MAX_RECORDS: '10' },
       log: { log: () => {}, warn: (m) => warnings.push(m), error: () => {} },
-      fetchImpl: withSatcat(fetchImpl),
+      fetchImpl: withBulkSources(fetchImpl),
       outputPath,
+      gpOutputPath: path.join(workDir, 'gp-active.json'),
       metaPath,
       backoffMs: 0,
     });
     if (!existsSync(outputPath)) throw new Error('main failed: ' + warnings.join(' | '));
 
     expect(code).toBe(0);
-    // One request per source file plus SATCAT, and NONE may carry a validator.
-    expect(seen).toHaveLength(3);
+    // One request per source file plus SATCAT and bulk GP, and NONE may carry
+    // a validator — a 304 with no output file would leave us empty-handed.
+    expect(seen).toHaveLength(4);
     for (const headers of seen) {
       expect(headers['If-None-Match']).toBeUndefined();
       expect(headers['If-Modified-Since']).toBeUndefined();
       expect(headers['User-Agent']).toContain('GRAZE/');
     }
-    // The two SOCRATES files are ranged; SATCAT is fetched whole.
+    // The two SOCRATES files are ranged; SATCAT and GP are fetched whole.
     expect(seen.filter((h) => h['Range'] !== undefined)).toHaveLength(2);
     // And it actually produced the file the deploy needs.
     expect(existsSync(outputPath)).toBe(true);
@@ -547,8 +589,9 @@ describe('conditional requests require an existing output file', () => {
     const code = await main({
       env: { SOCRATES_MAX_RECORDS: '10' },
       log: { log: () => {}, warn: (m) => warnings.push(m), error: () => {} },
-      fetchImpl: withSatcat(fetchImpl),
+      fetchImpl: withBulkSources(fetchImpl),
       outputPath,
+      gpOutputPath: path.join(workDir, 'gp-active.json'),
       metaPath,
       backoffMs: 0,
     });
@@ -580,8 +623,8 @@ describe('record cap', () => {
     };
     await main(mainOptions(fetchImpl, { SOCRATES_MAX_RECORDS: undefined }));
     const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
-    // minRange + maxProb + satcat
-    expect(requested).toBe(3);
+    // minRange + maxProb + satcat + bulk GP
+    expect(requested).toBe(4);
     // With a default of 10 this would cap at 10; the real default is far higher.
     expect(written.recordCount).toBe(40);
   });
@@ -771,7 +814,7 @@ describe('three independently-validated sources', () => {
     expect(satReqs[0].headers['User-Agent']).toContain('GRAZE/');
 
     const meta = await readMeta(path.join(workDir, '.cache', 'socrates-meta.json'));
-    expect(Object.keys(meta).sort()).toEqual(['maxProb', 'minRange', 'satcat']);
+    expect(Object.keys(meta).sort()).toEqual(['gp', 'maxProb', 'minRange', 'satcat']);
     expect(meta.satcat.etag).toBe('"sat-v1"');
     expect(meta.minRange.etag).toBe('"soc-v1"');
 
@@ -842,7 +885,110 @@ describe('schema upgrades force a rebuild', () => {
     expect(await main(mainOptions(allStale))).toBe(0);
 
     const after = JSON.parse(await readFile(out, 'utf8'));
-    expect(after.schemaVersion).toBe(4);
+    expect(after.schemaVersion).toBe(5);
     expect(after.conjunctions[0]).toHaveProperty('regime1');
+  });
+});
+
+describe('bulk GP bake', () => {
+  it('keeps only objects a conjunction references', () => {
+    const wanted = conjunctionObjectIds([
+      { noradId1: 1, noradId2: 2 },
+      { noradId1: 2, noradId2: 3 },
+    ]);
+    expect([...wanted].sort()).toEqual([1, 2, 3]);
+    const index = buildGpIndex(
+      [
+        { NORAD_CAT_ID: 1, OBJECT_NAME: 'A' },
+        { NORAD_CAT_ID: 3, OBJECT_NAME: 'C' },
+        { NORAD_CAT_ID: 9999, OBJECT_NAME: 'IRRELEVANT' },
+      ],
+      wanted,
+    );
+    // 9999 is in the bulk group but in no conjunction — dropped, so the client
+    // never downloads elements for objects it cannot select.
+    expect(Object.keys(index.records).sort()).toEqual(['1', '3']);
+    expect(index.matched).toBe(2);
+    expect(index.catalogSize).toBe(3);
+    expect(index.missingIds).toEqual([2]);
+  });
+
+  it('accepts a string or numeric NORAD_CAT_ID', () => {
+    const index = buildGpIndex([{ NORAD_CAT_ID: '25544' }], new Set([25544]));
+    expect(index.matched).toBe(1);
+    expect(index.records[25544]).toBeDefined();
+  });
+
+  it('ignores duplicate and malformed entries', () => {
+    const index = buildGpIndex(
+      [
+        { NORAD_CAT_ID: 5, OBJECT_NAME: 'first' },
+        { NORAD_CAT_ID: 5, OBJECT_NAME: 'second' },
+        { NORAD_CAT_ID: 'not-a-number' },
+        null,
+      ],
+      new Set([5]),
+    );
+    expect(index.matched).toBe(1);
+    expect(index.records[5].OBJECT_NAME).toBe('first');
+  });
+
+  it('rejects a non-array payload rather than baking an empty file', () => {
+    expect(() => buildGpIndex({ error: 'rate limited' }, new Set([1]))).toThrow(/not a JSON array/);
+  });
+
+  it('writes gp-active.json and never requests an individual object', async () => {
+    const urls = [];
+    const fetchImpl = async (url) => {
+      urls.push(url);
+      return { status: 206, ok: false, text: async () => CSV, headers: new Headers() };
+    };
+    expect(await main(mainOptions(fetchImpl))).toBe(0);
+
+    // The whole point: ONE bulk GP request, and no per-object CATNR call for
+    // the objects the group omits.
+    const gpUrls = urls.filter((u) => u.includes('gp.php'));
+    expect(gpUrls).toHaveLength(1);
+    expect(gpUrls[0]).toContain('GROUP=active');
+    expect(gpUrls[0]).toContain('FORMAT=json');
+    expect(urls.filter((u) => u.includes('CATNR'))).toHaveLength(0);
+
+    const gp = JSON.parse(await readFile(path.join(workDir, 'gp-active.json'), 'utf8'));
+    // CSV references 25544, 100001, 47919, 68098; the stub group carries only
+    // the first and third.
+    expect(Object.keys(gp.records).sort()).toEqual(['25544', '47919']);
+    expect(gp.requestedCount).toBe(4);
+    expect(gp.recordCount).toBe(2);
+    expect(gp.records[25544].MEAN_MOTION).toBe(15.5);
+
+    // Coverage is disclosed in socrates.json so the UI can report it without
+    // downloading the GP file.
+    const written = JSON.parse(await readFile(path.join(workDir, 'socrates.json'), 'utf8'));
+    expect(written.gpRequestedObjects).toBe(4);
+    expect(written.gpObjects).toBe(2);
+    expect(written.gpMissingObjects).toBe(2);
+    // Both rows pair a covered object with an uncovered one, so neither plots.
+    expect(written.gpUnusableRecords).toBe(2);
+  });
+
+  it('rebuilds when sources are unchanged but gp-active.json is missing', async () => {
+    const fresh = async () => ({
+      status: 200, ok: true, text: async () => CSV,
+      headers: new Headers({ etag: '"v1"' }),
+    });
+    await main(mainOptions(fresh));
+    const gpPath = path.join(workDir, 'gp-active.json');
+    expect(existsSync(gpPath)).toBe(true);
+
+    // Simulate the CI failure mode: .cache/ and socrates.json restored, the GP
+    // artifact absent. A 304 must not be allowed to leave the app with no
+    // elements at all.
+    await rm(gpPath);
+    const notModified = async (url) =>
+      url.includes('gp.php')
+        ? { status: 200, ok: true, text: async () => GP_STUB, headers: new Headers() }
+        : { status: 304, ok: false, headers: new Headers() };
+    expect(await main(mainOptions(notModified))).toBe(0);
+    expect(existsSync(gpPath)).toBe(true);
   });
 });
