@@ -14,10 +14,11 @@
     "build:core": "npm run build --workspace conjunction-core",
     "build:web": "npm run build --workspace conjunction-web",
     "data:fetch": "node scripts/fetch-socrates.mjs",
-    "test": "vitest run",
+    "test": "npm run typecheck && vitest run",
     "dev": "npm run dev --workspace conjunction-web",
     "refresh:test-data": "node scripts/refresh-test-data.mjs",
-    "verify:texture": "node scripts/verify-texture-registration.mjs"
+    "verify:texture": "node scripts/verify-texture-registration.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "engines": {
     "node": ">=20"

@@ -16,9 +16,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "verify:propagation": "tsx scripts/verify-propagation.ts"
+    "build": "npm run typecheck && tsc -p tsconfig.json",
+    "test": "npm run typecheck && vitest run",
+    "verify:propagation": "tsx scripts/verify-propagation.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "satellite.js": "^6.0.0"
