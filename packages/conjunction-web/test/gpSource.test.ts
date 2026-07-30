@@ -41,7 +41,7 @@ const BAKED: BakedGp = {
 };
 
 const jsonResponse = (body: unknown): Response =>
-  ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
+  ({ ok: true, status: 200, text: async () => JSON.stringify(body) }) as unknown as Response;
 
 describe('baked GP source', () => {
   it('reads the baked file, never CelesTrak', async () => {
@@ -92,5 +92,25 @@ describe('baked GP source', () => {
     const parsed = parseBakedGp({ records: { '1': RECORD } });
     expect(parsed.recordCount).toBe(0);
     expect(parsed.records['1']).toBeDefined();
+  });
+});
+
+describe('a static host serving index.html for a missing file', () => {
+  it('is reported as an absent deploy, not a corrupt file', async () => {
+    // Observed live: Vite preview answers a missing /data/gp-active.json with
+    // index.html and HTTP 200, so response.ok is true and json() throws
+    // "Unexpected token '<'" — which reads like corruption rather than absence.
+    const spaFallback = async () =>
+      ({
+        ok: true,
+        status: 200,
+        text: async () => '<!doctype html>\n<html><body>app</body></html>',
+      }) as unknown as Response;
+    await expect(loadBakedGp(spaFallback as unknown as typeof fetch)).rejects.toThrow(
+      GpFileMissingError,
+    );
+    await expect(loadBakedGp(spaFallback as unknown as typeof fetch)).rejects.toThrow(
+      /absent from the deploy/,
+    );
   });
 });

@@ -94,7 +94,24 @@ export async function loadBakedGp(
   if (!response.ok) {
     throw new GpFileMissingError(`${response.status} fetching ${url}`);
   }
-  return parseBakedGp(await response.json());
+  /*
+   * A static host — Vite's preview server, and most SPA hosts — answers a
+   * missing file with index.html and HTTP 200, so `ok` is not enough. Parsing
+   * by hand turns that into the "elements are not deployed" message instead of
+   * a raw `Unexpected token '<'`, which reads like a corrupt file rather than
+   * an absent one. fetchLocalElements guards the same trap.
+   */
+  const body = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new GpFileMissingError(
+      `${url} did not return JSON (got ${body.trimStart().slice(0, 20)}…) — the baked ` +
+        'elements file is most likely absent from the deploy',
+    );
+  }
+  return parseBakedGp(parsed);
 }
 
 /** Look up one object's elements, or throw GpUnavailableError. */
