@@ -29,6 +29,18 @@ import {
 } from './fetch-socrates.mjs';
 import { parseSocratesCsv } from '../packages/conjunction-core/dist/index.js';
 
+/*
+ * Byte-faithful capture of gp.php's live 2026-07-30 "already downloaded" reply,
+ * hard wraps included. The wrap falls mid-phrase — "successful" / "download" —
+ * and a first version of this fixture joined the lines with a space, so the
+ * test passed while the real bake still failed on the genuine article. Keep the
+ * newlines: they are the thing under test.
+ */
+const NOT_UPDATED_BODY =
+  'GP data has not updated since your last successful\n' +
+  'download of GROUP=active at 2026-07-30 15:50:03 UTC.\n' +
+  'Data is updated once every 2 hours.\n';
+
 const CSV = [
   'NORAD_CAT_ID_1,OBJECT_NAME_1,DSE_1,NORAD_CAT_ID_2,OBJECT_NAME_2,DSE_2,TCA,TCA_RANGE,TCA_RELATIVE_SPEED,MAX_PROB,DILUTION',
   '25544,ISS (ZARYA) [+],1.0,100001,TEST DEB [-],2.0,2026-07-29 01:02:03.000,0.013,14.4,1.19E-02,0.007',
@@ -348,12 +360,24 @@ function withBulkSources(fetchImpl) {
   return async (url, init) => {
     if (url.includes('gp.php')) {
       const scripted = await fetchImpl(url, init);
-      // A case that scripts gp.php explicitly wins; otherwise serve the stub.
-      if (scripted !== undefined && typeof scripted.json === 'function') {
+      if (scripted === undefined) {
+        return { status: 200, ok: true, text: async () => GP_STUB, headers: new Headers() };
+      }
+      // Anything that is not a plain success was scripted deliberately (a 403,
+      // a 500, a 304) — the case means it, so pass it through untouched.
+      if (scripted.status !== 200 && scripted.status !== 206) {
         return scripted;
       }
-      if (scripted !== undefined && scripted.status === 304) {
-        return scripted;
+      // A body that already parses as a GP array is a real scripted payload.
+      if (typeof scripted.text === 'function') {
+        const body = await scripted.text();
+        try {
+          if (Array.isArray(JSON.parse(body))) {
+            return { ...scripted, text: async () => body };
+          }
+        } catch {
+          // Not JSON: the case was scripting SOCRATES, not GP. Fall through.
+        }
       }
       return { status: 200, ok: true, text: async () => GP_STUB, headers: new Headers() };
     }
@@ -990,5 +1014,99 @@ describe('bulk GP bake', () => {
         : { status: 304, ok: false, headers: new Headers() };
     expect(await main(mainOptions(notModified))).toBe(0);
     expect(existsSync(gpPath)).toBe(true);
+  });
+});
+
+describe("gp.php's 403 'not updated' reply", () => {
+  const NOT_UPDATED = NOT_UPDATED_BODY;
+
+  it('is treated as not-modified, not as an error', async () => {
+    // Observed live 2026-07-30: gp.php signals "you already have this" with 403
+    // and a plain-text body rather than 304.
+    const result = await fetchCsv({
+      url: 'https://example.invalid/gp.php?GROUP=active',
+      userAgent: 'test',
+      meta: {},
+      backoffMs: 0,
+      log: silent,
+      fetchImpl: async () => ({
+        status: 403, ok: false, text: async () => NOT_UPDATED, headers: new Headers(),
+      }),
+    });
+    expect(result.status).toBe(304);
+    expect(result.notModifiedReason).toContain('has not updated');
+  });
+
+  it('is never retried — the answer cannot change within a backoff', async () => {
+    let calls = 0;
+    await fetchCsv({
+      url: 'https://example.invalid/gp.php?GROUP=active',
+      userAgent: 'test', meta: {}, backoffMs: 0, log: silent,
+      fetchImpl: async () => {
+        calls++;
+        return { status: 403, ok: false, text: async () => NOT_UPDATED, headers: new Headers() };
+      },
+    });
+    expect(calls).toBe(1);
+  });
+
+  it('still raises on a genuine 403, and does not retry that either', async () => {
+    let calls = 0;
+    await expect(
+      fetchCsv({
+        url: 'https://example.invalid/gp.php?GROUP=active',
+        userAgent: 'test', meta: {}, backoffMs: 0, log: silent,
+        fetchImpl: async () => {
+          calls++;
+          return {
+            status: 403, ok: false, text: async () => 'Forbidden: client blocked',
+            headers: new Headers(),
+          };
+        },
+      }),
+    ).rejects.toThrow(/client blocked/);
+    // Hammering a refusal is what gets a client blocked for real.
+    expect(calls).toBe(1);
+  });
+});
+
+describe('a GP failure must not discard the conjunction bake', () => {
+  const gpFails = async (url) =>
+    url.includes('gp.php')
+      ? { status: 500, ok: false, text: async () => 'boom', headers: new Headers() }
+      : { status: 206, ok: false, text: async () => CSV, headers: new Headers() };
+
+  it('still writes socrates.json when the GP step fails', async () => {
+    const out = path.join(workDir, 'socrates.json');
+    expect(await main(mainOptions(gpFails))).toBe(0);
+    // The table, filters and screened figures are all valid without elements.
+    const written = JSON.parse(await readFile(out, 'utf8'));
+    expect(written.recordCount).toBe(2);
+    expect(existsSync(path.join(workDir, 'gp-active.json'))).toBe(false);
+  });
+
+  it('fails the build under STRICT_DATA, but only after the payload is safe', async () => {
+    const out = path.join(workDir, 'socrates.json');
+    expect(await main(mainOptions(gpFails, { STRICT_DATA: '1' }))).toBe(1);
+    // Non-zero exit for the scheduler, yet the conjunction list still landed.
+    expect(existsSync(out)).toBe(true);
+    expect(JSON.parse(await readFile(out, 'utf8')).recordCount).toBe(2);
+  });
+
+  it('reports "current" with nothing to reuse as a failure, not a success', async () => {
+    // A fresh clone can be told its copy is current, because gp.php tracks the
+    // last download per client rather than per file.
+    const notUpdated = async (url) =>
+      url.includes('gp.php')
+        ? {
+            status: 403, ok: false, headers: new Headers(),
+            text: async () => NOT_UPDATED_BODY,
+          }
+        : { status: 206, ok: false, text: async () => CSV, headers: new Headers() };
+    const warnings = [];
+    const opts = mainOptions(notUpdated);
+    expect(await main({ ...opts, log: { ...silent, warn: (m) => warnings.push(m) } })).toBe(0);
+    expect(existsSync(path.join(workDir, 'socrates.json'))).toBe(true);
+    expect(warnings.join(' ')).toMatch(/no gp-active\.json exists to reuse/);
   });
 });

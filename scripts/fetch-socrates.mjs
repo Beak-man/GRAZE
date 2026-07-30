@@ -135,6 +135,14 @@ const gpGroupUrl = (group) =>
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** An HTTP refusal that retrying cannot fix, so the backoff loop must not try. */
+export class NonRetryableHttpError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'NonRetryableHttpError';
+  }
+}
+
 /** CelesTrak blocks anonymous automated clients; never send a default/absent UA. */
 export function buildUserAgent(version, contact) {
   return `GRAZE/${version} (+${REPO_URL}; ${contact})`;
@@ -239,6 +247,31 @@ export async function fetchCsv({
       if (response.status === 304) {
         return { status: 304 };
       }
+      /*
+       * gp.php signals "you already have this" with 403 and a plain-text body,
+       * not 304:
+       *
+       *   GP data has not updated since your last successful download of
+       *   GROUP=active at 2026-07-30 15:50:03 UTC. Data is updated once every
+       *   2 hours.
+       *
+       * Observed 2026-07-30. It is a success for our purposes — reuse what is
+       * on disk — and it must NOT be retried: the answer cannot change within
+       * a backoff, and hammering a "you already have it" reply is exactly the
+       * behaviour that gets a client blocked for real. Matched on the body so
+       * a genuine 403 (blocked, banned, bad request) still raises.
+       */
+      if (response.status === 403) {
+        const body = await response.text();
+        // The body is hard-wrapped, and the wrap falls mid-phrase ("successful\n
+        // download"), so collapse whitespace before matching rather than
+        // assuming where the line breaks land.
+        const flat = body.replace(/\s+/g, ' ').trim();
+        if (/has not updated since your last successful download/i.test(flat)) {
+          return { status: 304, notModifiedReason: flat };
+        }
+        throw new NonRetryableHttpError(`HTTP 403 Forbidden — ${flat.slice(0, 200)}`);
+      }
       // 206 is the expected success for a Range request; 200 means the server
       // ignored it and sent the whole file, which still parses fine.
       if (!response.ok && response.status !== 206) {
@@ -253,6 +286,11 @@ export async function fetchCsv({
       };
     } catch (error) {
       lastError = error;
+      // A refusal that a retry cannot change: fail immediately rather than
+      // spending the remaining attempts provoking the server.
+      if (error instanceof NonRetryableHttpError) {
+        throw error;
+      }
       if (attempt < MAX_ATTEMPTS) {
         const wait = backoffMs * 2 ** (attempt - 1);
         log.warn?.(`  attempt ${attempt} failed (${error.message}); retrying in ${wait} ms`);
@@ -696,12 +734,21 @@ export async function main({
      * last runtime CelesTrak dependency: the client previously called
      * gp.php?CATNR=<id> for both objects on every conjunction click.
      */
+    /*
+     * The GP step is fenced off from the conjunction bake. A failure here must
+     * not discard a good SOCRATES payload: the table, filters and screening
+     * figures are all still valid without elements, and the UI already reports
+     * missing elements per row. Under STRICT_DATA the failure is re-raised
+     * after the payload is safely on disk.
+     */
+    let gpError = null;
     const wantedIds = conjunctionObjectIds(payload.conjunctions);
     const gpMeta = outputExists && gpOutputExists ? (storedMeta.gp ?? {}) : {};
     let gpRecords = [];
     let gpFresh = false;
     let gpLastModified = null;
     let gpEtag = null;
+    try {
     for (const group of GP_GROUPS) {
       const url = gpGroupUrl(group);
       log.log?.(`Fetching gp:${group} from ${url}`);
@@ -763,9 +810,34 @@ export async function main({
       log.log?.(
         `  gp: ${payload.recordCount - unusable}/${payload.recordCount} conjunctions fully plottable`,
       );
-    } else {
-      log.log?.('  gp: unchanged — reusing coverage counts from the cached payload');
+    } else if (existsSync(gpOutputPath)) {
+      log.log?.('  gp: unchanged — reusing the existing gp-active.json and its counts');
       nextMeta.gp = gpMeta;
+      payload.gpObjects = previous?.gpObjects;
+      payload.gpMissingObjects = previous?.gpMissingObjects;
+      payload.gpRequestedObjects = previous?.gpRequestedObjects;
+      payload.gpUnusableRecords = previous?.gpUnusableRecords;
+    } else {
+      /*
+       * "Not modified" with nothing on disk to reuse. Reachable because gp.php
+       * tracks the last successful download per client, so a fresh clone (or a
+       * deleted artifact) can be told it is current when it holds nothing. The
+       * conjunction list is still good and still worth shipping; every row will
+       * report its elements unavailable until the next GP update window.
+       */
+      throw new Error(
+        'gp: upstream reports our copy is current, but no gp-active.json exists to reuse. ' +
+          'GP publishes on a ~2 hour cycle and refuses a repeat download in between, so ' +
+          'the elements cannot be re-fetched until the next window.',
+      );
+    }
+    } catch (error) {
+      gpError = error;
+      log.warn?.(`  ${error.message}`);
+      log.warn?.(
+        '  continuing without elements: the conjunction list is unaffected and every ' +
+          'row will report "GP data unavailable" until the next successful bake.',
+      );
       payload.gpObjects = previous?.gpObjects;
       payload.gpMissingObjects = previous?.gpMissingObjects;
       payload.gpRequestedObjects = previous?.gpRequestedObjects;
@@ -780,6 +852,13 @@ export async function main({
       `  wrote ${payload.recordCount} unique conjunctions (${bytes} bytes) from ` +
         `${perSource.map(([k, v]) => `${k}:${v.length}`).join(', ')}`,
     );
+    // The conjunction list is safely on disk; only now is a GP failure allowed
+    // to fail the build. A scheduler must still hear about it, because an
+    // elements-less deploy can render the table but nothing in 3D.
+    if (gpError !== null && strict) {
+      log.error?.(`  STRICT_DATA=1 — failing the build on the GP step: ${gpError.message}`);
+      return 1;
+    }
     return 0;
   } catch (error) {
     const existing = existsSync(outputPath);
