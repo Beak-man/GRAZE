@@ -48,18 +48,20 @@ jobs:
           node-version-file: .node-version
           cache: npm
 
-      # Restores the previous run's ETag/Last-Modified AND the baked data file.
-      # Both are needed together: caching only the metadata invites a 304 with
-      # no file to reuse. The key is unique per run with a shared restore prefix
-      # so the cache rolls forward — a fixed key would be written once and the
-      # stored ETag would freeze forever.
+      # Restores the previous run's ETag/Last-Modified AND every baked data file.
+      # All are needed together: caching only the metadata invites a 304 with no
+      # file to reuse. The whole public/data directory is cached rather than
+      # named files, so adding a baked artifact never silently leaves one
+      # uncached — that is exactly how gp-active.json was missed. The key is
+      # unique per run with a shared restore prefix so the cache rolls forward;
+      # a fixed key would be written once and the stored ETag would freeze.
       - name: Restore SOCRATES cache
         if: ${{ !inputs.force_refresh }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .cache
-            packages/conjunction-web/public/data/socrates.json
+            packages/conjunction-web/public/data
           key: socrates-${{ github.run_id }}
           restore-keys: socrates-
 
@@ -70,15 +72,13 @@ jobs:
       # leave the last good deployment live. Publishing a data-less artifact is
       # worse than not publishing, because the client would then auto-fetch the
       # full CSV once per visitor.
+      # VITE_CELESTRAK_BASE is deliberately absent: orbital elements are baked
+      # into gp-active.json, so there is no cross-origin GP request left to
+      # proxy. The variable is unread by the app — do not reintroduce it.
       - name: Build
         run: npm run build
         env:
           STRICT_DATA: '1'
-          # Optional CORS proxy origin. Empty means the browser calls CelesTrak
-          # directly, which works today (they send Access-Control-Allow-Origin: *
-          # on SOCRATES). Kept as a seam so a fork, or a future CORS tightening,
-          # is a repository-variable change rather than a code change.
-          VITE_CELESTRAK_BASE: ${{ vars.VITE_CELESTRAK_BASE }}
 
       # Surface data freshness two ways, on purpose:
       #  - $GITHUB_STEP_SUMMARY renders on the run's web page, but that buffer
@@ -88,6 +88,13 @@ jobs:
       - name: Summarize baked data
         if: always()
         run: |
+          GP=packages/conjunction-web/public/data/gp-active.json
+          if [ -f "$GP" ]; then
+            echo "GP_status=baked ($(wc -c < "$GP") bytes)"
+          else
+            # Not fatal to the summary, but it means every row is unplottable.
+            echo "GP_status=MISSING — no conjunction can be visualized"
+          fi
           FILE=packages/conjunction-web/public/data/socrates.json
           if [ -f "$FILE" ]; then
             node -e '
@@ -107,6 +114,18 @@ jobs:
               }
               const both = d.conjunctions.filter((c) => (c.sources ?? []).length > 1).length;
               rows.push(["recordsInBothOrderings", String(both)]);
+              // GP coverage. GROUP=active omits debris, rocket bodies and
+              // analyst tracks, so a chunk of rows cannot be visualized. That
+              // is accepted, but it must never be invisible: a sudden drop here
+              // means the bulk group changed shape, not that space got safer.
+              rows.push(["gpObjects", String(d.gpObjects ?? "unknown")]);
+              rows.push(["gpRequestedObjects", String(d.gpRequestedObjects ?? "unknown")]);
+              rows.push(["gpMissingObjects", String(d.gpMissingObjects ?? "unknown")]);
+              rows.push(["gpUnusableRecords", String(d.gpUnusableRecords ?? "unknown")]);
+              if (typeof d.gpObjects === "number" && d.gpRequestedObjects) {
+                const pct = ((100 * d.gpObjects) / d.gpRequestedObjects).toFixed(1);
+                rows.push(["gpCoveragePercent", pct]);
+              }
               // Greppable, one key=value per line.
               for (const [k, v] of rows) console.log(`SOCRATES_${k}=${v}`);
               // Markdown for the run page.
