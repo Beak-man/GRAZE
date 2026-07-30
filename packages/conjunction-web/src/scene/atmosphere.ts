@@ -3,13 +3,13 @@ import * as THREE from 'three';
 /**
  * Rayleigh + Mie atmospheric scattering shell after Sean O'Neil's GPU Gems 2
  * chapter 16 implementation, ported to GLSL 300 es from NASA WorldWind's
- * SkyProgram/AtmosphereProgram (Apache 2.0). Scattering is computed
- * per-vertex on a back-side sphere and the phase functions are applied per
- * fragment, so the limb glows blue on the day side, fades through
- * orange/red at the terminator, and goes dark on the night side.
+ * SkyProgram/AtmosphereProgram (Apache 2.0, https://worldwind.arc.nasa.gov/).
+ * Scattering is computed per-vertex on a back-side sphere and the phase
+ * functions are applied per fragment, so the limb glows blue on the day side,
+ * fades through orange/red at the terminator, and goes dark on the night side.
  */
 
-// Scattering constants as used by WorldWind's AtmosphereProgram.
+// Scattering constants as used by NASA WorldWind's AtmosphereProgram.
 const ATMOSPHERE_VERTEX = /* glsl */ `
   precision highp float;
 

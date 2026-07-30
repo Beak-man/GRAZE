@@ -26,9 +26,10 @@ export function sunDirectionScene(date: Date, target: THREE.Vector3): THREE.Vect
 }
 
 // Atmospheric in-scattering for a point on the ground, ported from NASA
-// WorldWind's GroundProgram (Sean O'Neil, GPU Gems 2 ch. 16, Apache 2.0). The
-// scattering integral runs per vertex and produces primaryColor (in-scattered
-// skylight — aerial perspective) and secondaryColor (surface attenuation),
+// WorldWind's GroundProgram (Sean O'Neil, GPU Gems 2 ch. 16, Apache 2.0,
+// https://worldwind.arc.nasa.gov/). The scattering integral runs per vertex and
+// produces primaryColor (in-scattered skylight — aerial perspective) and
+// secondaryColor (surface attenuation),
 // combined with the day imagery in the fragment shader. This shares its
 // constants and scaleFunc with the sky shell in atmosphere.ts, so the day-side
 // surface and the limb halo are lit by the same model.

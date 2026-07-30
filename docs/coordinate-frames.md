@@ -130,7 +130,8 @@ so the conjunction lands at the center of the disk (nadir).
 - **Earth** ([`scene/earth.ts`](../packages/conjunction-web/src/scene/earth.ts)):
   a `ShaderMaterial` blends the NASA Blue Marble (day) and Black Marble (night)
   textures by `dot(worldNormal, sunDirection)` with a soft terminator, and adds
-  O'Neil atmospheric in-scattering (ported from NASA WorldWind) for aerial
+  O'Neil atmospheric in-scattering (ported from
+  [NASA WorldWind](https://worldwind.arc.nasa.gov/)) for aerial
   perspective on the day side and a night-limb glow.
 - **Atmosphere** ([`scene/atmosphere.ts`](../packages/conjunction-web/src/scene/atmosphere.ts)):
   a slightly larger back-side shell running the same scattering model, sharing

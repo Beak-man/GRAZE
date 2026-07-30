@@ -322,4 +322,8 @@ row count or origin with `ROWS=`, `MAX_CANDIDATES=`, `BASE=`.
   conjunction data and the GP element API
 - NASA — Blue Marble Next Generation imagery (August 2004)
 - NASA — Black Marble imagery (2016)
-- Star catalog derived from the ESA Hipparcos mission, via NASA WorldWind (Apache 2.0).
+- Star catalog derived from the ESA Hipparcos mission, via
+  [NASA WorldWind](https://worldwind.arc.nasa.gov/) (Apache 2.0).
+- Atmospheric and ground scattering shaders ported from
+  [NASA WorldWind](https://worldwind.arc.nasa.gov/)'s `AtmosphereProgram` and
+  `GroundProgram` (Sean O'Neil, GPU Gems 2 ch. 16, Apache 2.0).

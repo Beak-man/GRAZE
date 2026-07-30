@@ -3,11 +3,11 @@ import { applyMatrix3, eciToThreeJs, precessionMatrixJ2000ToDate } from 'conjunc
 
 /**
  * Hipparcos starfield (stars.json, ESA Hipparcos catalog via NASA WorldWind,
- * Apache 2.0). Each star's equatorial coordinates (ra/dec) are converted to a
+ * Apache 2.0, https://worldwind.arc.nasa.gov/). Each star's equatorial coordinates (ra/dec) are converted to a
  * direction on a fixed far shell, with visual magnitude mapped to point size
  * and opacity.
  *
- * Unlike WorldWind's StarFieldProgram — whose scene is Earth-fixed and must
+ * Unlike NASA WorldWind's StarFieldProgram — whose scene is Earth-fixed and must
  * rotate stars by sidereal time (GMST) every frame — the GRAZE scene is
  * ECI-aligned, so no GMST rotation is applied to the stars. **That reasoning
  * holds for the starfield only**: the globe carries geographic imagery and is
