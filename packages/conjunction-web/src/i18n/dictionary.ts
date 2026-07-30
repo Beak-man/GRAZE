@@ -44,6 +44,8 @@ export interface Dictionary {
     readonly payload: string;
     readonly debris: string;
     readonly rocketBody: string;
+    /** Hide rows whose elements are not baked, so cannot be rendered. */
+    readonly visualizableOnly: string;
     readonly showAll: string;
     readonly shown: (visible: number, total: number) => string;
     /** Shown when filters match nothing in the baked subset. */
@@ -63,6 +65,8 @@ export interface Dictionary {
     readonly aboutType: string;
     readonly aboutMiss: string;
     readonly aboutPc: string;
+    readonly visualizable: string;
+    readonly aboutVisualizable: string;
     readonly aboutGraze: string;
   };
   readonly table: {
@@ -205,6 +209,7 @@ const en: Dictionary = {
     payload: 'Payload',
     debris: 'Debris',
     rocketBody: 'R/B',
+    visualizableOnly: 'Visualizable only',
     showAll: 'show all',
     shown: (visible, total) => `${visible} / ${total} shown`,
     noMatchesInSubset:
@@ -249,6 +254,11 @@ const en: Dictionary = {
     aboutType: 'About Type',
     aboutMiss: 'About miss distance',
     aboutPc: 'About probability of collision',
+    visualizable:
+      'Show only conjunctions whose orbital elements are baked into this build, so ' +
+      'the 3D view can render them. Rows are hidden, not deleted — the SOCRATES ' +
+      'figures for them are still valid.',
+    aboutVisualizable: 'About visualizable only',
     aboutGraze: 'About GRAZE',
   },
   table: {
@@ -402,6 +412,7 @@ const es: Dictionary = {
     payload: 'Carga útil',
     debris: 'Escombro',
     rocketBody: 'Cohete',
+    visualizableOnly: 'Solo visualizables',
     showAll: 'mostrar todo',
     shown: (visible, total) => `${visible} / ${total} mostradas`,
     noMatchesInSubset:
@@ -449,6 +460,11 @@ const es: Dictionary = {
     aboutType: 'Acerca del tipo de objeto',
     aboutMiss: 'Acerca de la distancia de cruce',
     aboutPc: 'Acerca de la probabilidad de colisión',
+    visualizable:
+      'Muestra solo las conjunciones cuyos elementos orbitales están incluidos en esta ' +
+      'compilación, de modo que la vista 3D pueda representarlas. Las filas se ocultan, ' +
+      'no se eliminan — sus cifras de SOCRATES siguen siendo válidas.',
+    aboutVisualizable: 'Acerca de solo visualizables',
     aboutGraze: 'Acerca de GRAZE',
   },
   table: {

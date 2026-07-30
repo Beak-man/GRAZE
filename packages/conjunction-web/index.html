@@ -595,6 +595,11 @@
             <label><input type="checkbox" data-type="debris" checked /><span id="lbl-debris">Debris</span></label>
             <label><input type="checkbox" data-type="rocket-body" checked /><span id="lbl-rocket-body">R/B</span></label>
           </div>
+          <div class="filter-row" id="visualizable-filter">
+            <span class="filter-label"></span>
+            <button type="button" id="tip-visualizable" class="tip-icon" aria-label="About visualizable only" data-tip="Show only conjunctions whose orbital elements are baked into this build, so the 3D view can render them.">i</button>
+            <label><input type="checkbox" id="filter-visualizable" /><span id="lbl-visualizable">Visualizable only</span></label>
+          </div>
           <div class="filter-row">
             <span class="filter-label" id="lbl-miss">Miss ≤</span>
             <button type="button" id="tip-miss" class="tip-icon" aria-label="About miss distance" data-tip="Miss distance — predicted closest separation between the two objects at TCA (time of closest approach), in kilometers.">i</button>

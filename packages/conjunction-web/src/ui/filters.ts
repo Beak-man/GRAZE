@@ -13,10 +13,18 @@ export interface ConjunctionFilters {
    * for "show all" so events with probability 0 still pass.
    */
   minProbability: number;
+  /** Hide events whose orbital elements are not baked, so cannot be rendered. */
+  visualizableOnly: boolean;
 }
 
 /** Regime of a catalog object, or undefined while GP data hasn't arrived. */
 export type RegimeLookup = (noradId: number) => OrbitRegime | undefined;
+
+/**
+ * Whether an event can be rendered, or undefined when the bake could not say
+ * (an older payload, or a run whose GP step failed).
+ */
+export type PlottableLookup = (event: ConjunctionEvent) => boolean | undefined;
 
 /**
  * Whether an event passes the active filters. Type and regime filters pass
@@ -28,7 +36,14 @@ export function eventPassesFilters(
   event: ConjunctionEvent,
   filters: ConjunctionFilters,
   lookupRegime: RegimeLookup,
+  isPlottable: PlottableLookup = () => undefined,
 ): boolean {
+  if (filters.visualizableOnly && isPlottable(event) === false) {
+    // Only a definite false hides a row. Unknown stays visible: hiding what we
+    // merely failed to classify would be a silent omission, the same rule the
+    // regime gate follows.
+    return false;
+  }
   if (event.minRange > filters.maxMissKm) {
     return false;
   }

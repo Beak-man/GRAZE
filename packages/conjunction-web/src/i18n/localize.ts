@@ -47,6 +47,10 @@ export function localizeStaticDom(): void {
   setText('#lbl-debris', d.filters.debris);
   setText('#lbl-rocket-body', d.filters.rocketBody);
 
+  setText('#lbl-visualizable', d.filters.visualizableOnly);
+  setAttr('#tip-visualizable', 'data-tip', d.tooltips.visualizable);
+  setAttr('#tip-visualizable', 'aria-label', d.tooltips.aboutVisualizable);
+
   setText('#lbl-miss', d.filters.missMax);
   setAttr('#tip-miss', 'data-tip', d.tooltips.miss);
   setAttr('#tip-miss', 'aria-label', d.tooltips.aboutMiss);

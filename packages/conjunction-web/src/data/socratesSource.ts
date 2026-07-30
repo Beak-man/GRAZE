@@ -17,6 +17,13 @@ export type BakedConjunction = ConjunctionEvent & {
   sources?: string[];
   regime1?: BakedRegime;
   regime2?: BakedRegime;
+  /**
+   * Whether BOTH objects have baked elements. Stamped at bake time because
+   * gp-active.json is fetched lazily on first selection — the "visualizable
+   * only" filter must work before any row has been clicked. Undefined means
+   * the bake could not classify it, which the filter treats as "show".
+   */
+  plottable?: boolean;
 };
 
 export type DataMode = 'auto' | 'baked' | 'runtime';

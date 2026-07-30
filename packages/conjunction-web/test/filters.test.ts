@@ -21,6 +21,7 @@ const SHOW_ALL: ConjunctionFilters = {
   types: new Set(['payload', 'debris', 'rocket-body']),
   maxMissKm: 5,
   minProbability: Number.NEGATIVE_INFINITY,
+  visualizableOnly: false,
 };
 
 const allLeo: RegimeLookup = () => 'LEO';
@@ -79,5 +80,36 @@ describe('eventPassesFilters', () => {
     const noRegimes = { ...SHOW_ALL, regimes: new Set<OrbitRegime>() };
     const halfKnown: RegimeLookup = (id) => (id === 25544 ? 'LEO' : undefined);
     expect(eventPassesFilters(EVENT, noRegimes, halfKnown)).toBe(true);
+  });
+});
+
+describe('visualizable-only filter', () => {
+  const onlyViz = { ...SHOW_ALL, visualizableOnly: true };
+
+  it('hides an event whose elements are not baked', () => {
+    expect(eventPassesFilters(EVENT, onlyViz, allLeo, () => false)).toBe(false);
+    expect(eventPassesFilters(EVENT, onlyViz, allLeo, () => true)).toBe(true);
+  });
+
+  it('shows an event the bake could not classify', () => {
+    // Only a definite false hides a row. An older payload — or a run whose GP
+    // step failed — carries no flag, and hiding what we merely failed to
+    // classify would be a silent omission.
+    expect(eventPassesFilters(EVENT, onlyViz, allLeo, () => undefined)).toBe(true);
+  });
+
+  it('does nothing while unchecked, whatever the flag says', () => {
+    expect(eventPassesFilters(EVENT, SHOW_ALL, allLeo, () => false)).toBe(true);
+  });
+
+  it('defaults to showing everything when no predicate is supplied', () => {
+    // Every existing caller passes three arguments; none of them may start
+    // hiding rows because a fourth was added.
+    expect(eventPassesFilters(EVENT, onlyViz, allLeo)).toBe(true);
+  });
+
+  it('composes with the other filters rather than overriding them', () => {
+    const tooFar = { ...onlyViz, maxMissKm: 0.001 };
+    expect(eventPassesFilters(EVENT, tooFar, allLeo, () => true)).toBe(false);
   });
 });

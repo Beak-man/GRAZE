@@ -2,6 +2,7 @@ import type { ConjunctionEvent, ObjectType, OrbitRegime } from 'conjunction-core
 import { formatProbability, formatRange, formatTca } from '../format.js';
 import { eventPassesFilters } from './filters.js';
 import type { ConjunctionFilters } from './filters.js';
+import type { BakedConjunction } from '../data/socratesSource.js';
 import { onLanguageChange, t } from '../i18n/translator.js';
 
 export type SortKey = 'minRange' | 'maxProbability';
@@ -190,13 +191,19 @@ export class Sidebar {
       types,
       maxMissKm: Number(requireElement<HTMLInputElement>('miss-max').value),
       minProbability: probValue === 'all' ? Number.NEGATIVE_INFINITY : Number(probValue),
+      visualizableOnly: requireElement<HTMLInputElement>('filter-visualizable').checked,
     };
   }
 
   private filteredEvents(): ConjunctionEvent[] {
     const filters = this.readFilters();
     return this.events.filter((event) =>
-      eventPassesFilters(event, filters, (id) => this.regimes.get(id)),
+      eventPassesFilters(
+        event,
+        filters,
+        (id) => this.regimes.get(id),
+        (e) => (e as BakedConjunction).plottable,
+      ),
     );
   }
 
