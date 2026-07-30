@@ -455,6 +455,15 @@
         font: 11px/1.4 "Segoe UI", system-ui, sans-serif;
         box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
         pointer-events: none;
+        /* Newlines in a tip are significant (see app.aboutTip); runs of spaces
+           still collapse, so wrapped source strings behave normally. */
+        white-space: pre-line;
+      }
+      /* Opt-in for multi-paragraph tips. Clamped to the viewport so the bubble
+         stays readable on a phone, where 420px would overflow. */
+      .tooltip-bubble.wide {
+        max-width: min(420px, calc(100vw - 16px));
+        font-size: 12px;
       }
 
       /* ---------- Tablet ---------- */
@@ -518,7 +527,7 @@
             <button type="button" data-lang="en">EN</button>
             <button type="button" data-lang="es">ES</button>
           </div>
-          <h1 title="General Rendezvous Assessment and Zone Evaluator">GR<span>A</span>ZE<button type="button" id="about-graze" class="tip-icon" aria-label="About GRAZE" data-tip="GRAZE (General Rendezvous Assessment and Zone Evaluator) — a 3D visualizer for upcoming satellite conjunctions from CelesTrak SOCRATES data. This is an early beta; see the disclaimer above. Source, issues, and license are on GitHub (linked in the footer).">i</button></h1>
+          <h1 title="General Rendezvous Assessment and Zone Evaluator">GR<span>A</span>ZE<button type="button" id="about-graze" class="tip-icon" aria-label="About GRAZE" data-tip-wide data-tip="GRAZE is a browser-based 3D visualizer for predicted satellite close approaches. Source code, issue tracking, and Apache 2.0 open-source licensing are available on GitHub.">i</button></h1>
           <div class="meta">General Rendezvous Assessment and Zone Evaluator</div>
         </header>
         <div id="status">Loading…</div>

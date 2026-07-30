@@ -46,6 +46,9 @@ function showTip(target: HTMLElement): void {
   }
   const el = ensureBubble();
   el.textContent = text;
+  // Opt-in wide layout for multi-paragraph tips (the About text). Toggled per
+  // show, so a normal tip after a wide one is not left oversized.
+  el.classList.toggle('wide', target.hasAttribute('data-tip-wide'));
   el.classList.remove('hidden');
   activeTarget = target;
   positionTip(target);

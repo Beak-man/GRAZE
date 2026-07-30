@@ -178,10 +178,20 @@ const en: Dictionary = {
     disclaimer:
       '⚠ GRAZE uses publicly available GP/TLE data with SGP4 propagation. ' +
       'For educational and awareness purposes only — not for operational conjunction assessment.',
+    // Newlines are significant: the tooltip bubble renders with
+    // `white-space: pre-line`, so these become the paragraph and bullet breaks.
     aboutTip:
-      'GRAZE (General Rendezvous Assessment and Zone Evaluator) — a 3D visualizer for upcoming ' +
-      'satellite conjunctions from CelesTrak SOCRATES data. This is an early beta; see the ' +
-      'disclaimer above. Source, issues, and license are on GitHub (linked in the footer).',
+      'GRAZE is a browser-based 3D visualizer for predicted satellite close approaches.\n\n' +
+      'Data Pipeline & Methodology:\n' +
+      '• Conjunction Events: Sourced from CelesTrak SOCRATES screening summaries.\n' +
+      '• 3D Trajectories: Propagated in real-time directly on your device using client-side ' +
+      'SGP4 and CelesTrak General Perturbations (OMM/JSON) orbital elements.\n\n' +
+      'Note on Data Consistency:\n' +
+      'SOCRATES screening assessments and public GP element sets are generated from independent ' +
+      'catalog updates. Discrepancies between published SOCRATES miss distances and ' +
+      'client-propagated orbits may occur due to element age, propagation limits, or active ' +
+      'satellite maneuvers.\n\n' +
+      'Source code, issue tracking, and Apache 2.0 open-source licensing are available on GitHub.',
     loading: 'Loading…',
     loadingAssets: 'Loading map imagery…',
     loadingAssetsProgress: (loaded, total) => `Loading map imagery… ${loaded} of ${total}`,
@@ -373,11 +383,23 @@ const es: Dictionary = {
     disclaimer:
       '⚠ GRAZE usa datos GP/TLE de acceso público con propagación SGP4. ' +
       'Solo para fines educativos y de concientización — no para evaluación operacional de conjunciones.',
+    // Los saltos de línea son significativos: el globo usa `white-space:
+    // pre-line`, así que marcan los párrafos y las viñetas.
     aboutTip:
-      'GRAZE (General Rendezvous Assessment and Zone Evaluator) — un visualizador 3D de próximas ' +
-      'conjunciones de satélites a partir de datos SOCRATES de CelesTrak. Es una beta temprana; ' +
-      'consulta el aviso de arriba. El código fuente, rastreador de incidencias y licencia están en GitHub ' +
-      '(enlazado en el pie de página).',
+      'GRAZE es un visualizador 3D en el navegador de acercamientos previstos entre ' +
+      'satélites.\n\n' +
+      'Flujo de datos y metodología:\n' +
+      '• Eventos de conjunción: obtenidos de los resúmenes de análisis SOCRATES de CelesTrak.\n' +
+      '• Trayectorias 3D: propagadas en tiempo real en tu propio dispositivo mediante SGP4 del ' +
+      'lado del cliente y elementos orbitales General Perturbations (OMM/JSON) de CelesTrak.\n\n' +
+      'Nota sobre la consistencia de los datos:\n' +
+      'Los análisis de SOCRATES y los conjuntos de elementos GP públicos se generan a partir de ' +
+      'actualizaciones independientes del catálogo. Pueden aparecer discrepancias entre las ' +
+      'distancias de cruce publicadas por SOCRATES y las órbitas propagadas en el cliente por la ' +
+      'antigüedad de los elementos, los límites de la propagación o maniobras activas del ' +
+      'satélite.\n\n' +
+      'El código fuente, el rastreador de incidencias y la licencia de código abierto Apache 2.0 ' +
+      'están disponibles en GitHub.',
     loading: 'Cargando…',
     loadingAssets: 'Cargando imágenes del mapa…',
     loadingAssetsProgress: (loaded, total) => `Cargando imágenes del mapa… ${loaded} de ${total}`,
