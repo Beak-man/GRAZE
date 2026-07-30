@@ -453,3 +453,95 @@ describe('exact sub-millisecond TCA evaluation', () => {
     expect(point!.altitude).toBeLessThan(430);
   });
 });
+
+/**
+ * Known-answer test for the TCA search, against an independent authority.
+ *
+ * CLAUDE.md's testing rule applies here: property tests on a minimiser (the
+ * result is <= its neighbours, the parabola is convex) all pass on a search
+ * that converged in the wrong basin. Only agreement with a value computed
+ * elsewhere pins the behaviour.
+ *
+ * SOCRATES screened this pair independently and published TCA
+ * 2026-07-29 14:45:08.479 with a 31 m miss at 14.560 km/s. Both element sets
+ * are ~17 h and ~32 h old at TCA and neither object manoeuvres (a cubesat and a
+ * 1975 Delta fragment), so SGP4 from these elements should land on the same
+ * event. It does, to 3 m and 0.1 s.
+ *
+ * This is the guard against narrowing the sweep window until it can no longer
+ * reach the true minimum: at 14.56 km/s the search must survive a TCA that sits
+ * seconds away from the published one.
+ */
+const RSW_02: OrbitalElements = {
+  OBJECT_NAME: 'RSW-02',
+  OBJECT_ID: '2021-076C',
+  EPOCH: '2026-07-28T21:59:47.631264',
+  MEAN_MOTION: 13.42856393,
+  ECCENTRICITY: 0.00177604,
+  INCLINATION: 86.413,
+  RA_OF_ASC_NODE: 142.9098,
+  ARG_OF_PERICENTER: 310.8471,
+  MEAN_ANOMALY: 49.1134,
+  EPHEMERIS_TYPE: 0,
+  CLASSIFICATION_TYPE: 'U',
+  NORAD_CAT_ID: 49114,
+  ELEMENT_SET_NO: 999,
+  REV_AT_EPOCH: 24148,
+  BSTAR: 0.00030357757,
+  MEAN_MOTION_DOT: 0.00000188,
+  MEAN_MOTION_DDOT: 0,
+};
+
+const DELTA_1_DEB: OrbitalElements = {
+  OBJECT_NAME: 'DELTA 1 DEB',
+  OBJECT_ID: '1975-052CQ',
+  EPOCH: '2026-07-28T06:17:22.742592',
+  MEAN_MOTION: 13.28192609,
+  ECCENTRICITY: 0.00805885,
+  INCLINATION: 99.9261,
+  RA_OF_ASC_NODE: 328.2627,
+  ARG_OF_PERICENTER: 98.143,
+  MEAN_ANOMALY: 325.965,
+  EPHEMERIS_TYPE: 0,
+  CLASSIFICATION_TYPE: 'U',
+  NORAD_CAT_ID: 21370,
+  ELEMENT_SET_NO: 999,
+  REV_AT_EPOCH: 70517,
+  BSTAR: 0.000031572109,
+  MEAN_MOTION_DOT: -2.7e-7,
+  MEAN_MOTION_DDOT: 0,
+};
+
+const SOCRATES_TCA = new Date('2026-07-29T14:45:08.479Z');
+const SOCRATES_MISS_KM = 0.031;
+const SOCRATES_SPEED_KMS = 14.56;
+
+describe('TCA search reproduces an independently screened conjunction', () => {
+  it('lands on the SOCRATES miss distance and TCA', () => {
+    const d = computeCloseApproach(RSW_02, DELTA_1_DEB, SOCRATES_TCA);
+    // Within 100 m of a 31 m published miss, at 14.56 km/s.
+    expect(Math.abs(d.actualMinRange - SOCRATES_MISS_KM)).toBeLessThan(0.1);
+    const offsetSeconds = (d.actualTcaEpochMs - SOCRATES_TCA.getTime()) / 1000;
+    expect(Math.abs(offsetSeconds)).toBeLessThan(1);
+    expect(d.relativeVelocityAtTca).toBeCloseTo(SOCRATES_SPEED_KMS, 0);
+  });
+
+  it('is stable across window sizes, so the sweep is not basin-hopping', () => {
+    // A search that stepped over the minimum would give a different answer at
+    // each window size, because each grid would land on a different sample.
+    const ranges = [30, 10, 5, 2].map(
+      (w) => computeCloseApproach(RSW_02, DELTA_1_DEB, SOCRATES_TCA, w).actualMinRange,
+    );
+    for (const r of ranges) {
+      expect(r).toBeCloseTo(ranges[0]!, 6);
+    }
+  });
+
+  it('refines below the 1 s sample grid', () => {
+    // At 14.56 km/s a 1 s grid can only bracket the minimum to ~7 km. Landing
+    // within 100 m proves the parabolic vertex step is doing real work.
+    const d = computeCloseApproach(RSW_02, DELTA_1_DEB, SOCRATES_TCA);
+    expect(d.actualMinRange).toBeLessThan(0.1);
+    expect(Number.isInteger(d.actualTcaEpochMs)).toBe(false);
+  });
+});
