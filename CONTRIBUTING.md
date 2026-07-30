@@ -27,12 +27,12 @@ Other commands:
 ```sh
 npm run build                 # build both packages; static site → packages/conjunction-web/dist
 npm test                      # vitest across all packages
-npm run refresh:test-data     # regenerate the bundled dev snapshot (list + GP) — see docs/data-flow.md
+npm run data:fetch            # bake socrates.json + gp-active.json — see docs/data-flow.md
 npm run verify:propagation -w conjunction-core   # live ISS ground-track sanity check
 ```
 
-`npm run dev` uses the bundled `test-data/` snapshot and makes **no** CelesTrak
-requests; opt into live data with `VITE_USE_LIVE=true npm run dev`. See
+`npm run dev` reads the baked `public/data/` files, exactly as production
+does; run `npm run data:fetch` once first. See
 [docs/data-flow.md](docs/data-flow.md).
 
 ## Hard constraints
@@ -56,9 +56,13 @@ These are not style preferences — breaking them produces wrong or broken outpu
 ## Be considerate of CelesTrak
 
 The SOCRATES list is a ~16 MB file and CelesTrak rate-limits aggressive clients.
-During development, rely on the bundled snapshot (the default) rather than
-hammering the live endpoint. `npm run refresh:test-data` already fetches only the
-first chunk of the list via an HTTP Range request.
+Bake once with `npm run data:fetch` and develop against the output rather than
+hammering the live endpoint; it already fetches only the first chunk of the list
+via an HTTP Range request.
+
+**Never probe `gp.php` by hand.** It enforces a ~2-hour window per client and
+signals it with a 403, so a throwaway curl to "check connectivity" costs the
+next real bake its elements. Use the SOCRATES CSV or SATCAT to test reachability.
 
 Don't replace the Earth textures with higher-resolution versions — they're sized
 deliberately for load time (see `CLAUDE.md`).

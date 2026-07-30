@@ -64,7 +64,8 @@ represented as TLEs. GRAZE therefore uses `FORMAT=JSON` GP queries and
 - **Conjunction events:** [CelesTrak SOCRATES](https://celestrak.org/SOCRATES/)
   raw CSV (`sort-minRange.csv` / `sort-maxProb.csv`)
 - **Orbital elements:** [CelesTrak GP API](https://celestrak.org/NORAD/elements/)
-  (`gp.php?CATNR={id}&FORMAT=JSON`, OMM format)
+  (`gp.php?GROUP=active&FORMAT=json`, OMM format) — fetched once per build,
+  never by the browser
 
 No authentication is required for either. Please be considerate of
 CelesTrak's bandwidth — GRAZE caches GP fetches per session and refreshes
@@ -75,12 +76,12 @@ SOCRATES data at most every 8 hours.
 GRAZE fetches two things from CelesTrak — the SOCRATES conjunction list and each
 object's GP orbital elements — but *when* and *from where* depends on the mode.
 
-**Development (`npm run dev`)** defaults to the bundled `test-data/` snapshot and
-makes **no** CelesTrak requests, to spare the rate limiter while iterating. Opt
-into live data with `VITE_USE_LIVE=true npm run dev`; requests then go
-same-origin through the Vite proxy (`/SOCRATES` → celestrak.org), so there are
-no CORS concerns. GP elements are never fetched in dev either: they come from
-the bundled `test-data/gp/` snapshot.
+**Development (`npm run dev`) reads exactly the same files production does.**
+There is no bundled mock snapshot: it drifted from the real bake and made a dev
+session look healthy while proving nothing about the pipeline. Run
+`npm run data:fetch` once, then `npm run dev`. The dev server proxies
+`/SOCRATES` to celestrak.org for the runtime-fallback path only, so there are
+no CORS concerns.
 
 **Production makes zero CelesTrak requests for orbital elements.** Both the
 conjunction list (`/data/socrates.json`) and the GP element sets
@@ -99,11 +100,10 @@ CelesTrak is still reachable on exactly two SOCRATES-list paths, neither of whic
 runs on page load: a fresh clone with no baked file, and the user explicitly
 clicking **"Fetch latest"** on the stale-data banner. The list is cached ~8 h in
 `localStorage`; the `#data-as-of` footer shows when the shown data is from. If a
-load fails, a **"Use local test data"** button falls back to the bundled snapshot.
+load fails, the sidebar offers a **Retry**.
 
 See **[docs/data-flow.md](docs/data-flow.md)** for the full picture — the caching
-layers, the load/decision flowcharts, every environment flag, and how the bundled
-snapshot is refreshed.
+layers, the load/decision flowcharts, and every environment flag.
 
 ## Running it
 
@@ -114,19 +114,21 @@ npm install
 npm run dev      # Vite dev server with hot reload at http://localhost:5173
 ```
 
-To spare CelesTrak's rate limiter, **`npm run dev` uses the bundled
-`test-data/` snapshot by default** and makes no live requests. When you
-specifically need to exercise the live API, opt in:
+Bake the data once before the first `npm run dev`:
 
 ```sh
-VITE_USE_LIVE=true npm run dev
+npm run data:fetch
 ```
+
+Both files are gitignored, so this is a per-clone step. Dev then resolves them
+exactly as production does; without them the app falls back to a runtime CSV
+fetch, which is what `VITE_DATA_MODE=baked` suppresses if you would rather it
+fail than network.
 
 The dev server proxies `/SOCRATES` to celestrak.org
 (see `packages/conjunction-web/vite.config.ts`), so there are no CORS
-concerns in development. `/NORAD` is no longer proxied — orbital elements come
-from the bundled `test-data/gp/` snapshot in dev and from the baked
-`/data/gp-active.json` in production.
+concerns in development. `/NORAD` is no longer proxied — orbital elements are
+read from the baked `/data/gp-active.json` in every mode.
 
 ### Production build & preview
 
@@ -142,9 +144,9 @@ npm run preview -w conjunction-web   # serve that build locally to try the produ
 | | Development (`npm run dev`) | Production (built `dist/`) |
 | --- | --- | --- |
 | Served by | Vite dev server (hot reload) | any static host / web server |
-| Data source (default) | bundled `test-data/` snapshot — no network | live CelesTrak |
-| CelesTrak requests | none by default (`VITE_USE_LIVE=true` to opt in) | none for GP (baked); SOCRATES list only on a fresh clone or manual "Fetch latest" |
-| Orbital elements | bundled `test-data/gp/` | baked `/data/gp-active.json` |
+| Data source (default) | baked `public/data/` files | the same baked files, shipped in `dist/` |
+| CelesTrak requests | none once baked; identical rules to production | none for GP (baked); SOCRATES list only with no baked file or a manual "Fetch latest" |
+| Orbital elements | baked `/data/gp-active.json` | baked `/data/gp-active.json` |
 | Caching | none (always fresh from disk) | `localStorage` — list ~8 h |
 | CORS | none — same-origin Vite proxy | not applicable to GP; SOCRATES sends a plain GET |
 | Hot reload | yes | n/a |
@@ -157,7 +159,7 @@ For *why* and the full caching story, see
 
 ```sh
 npm test                       # vitest unit tests across all packages
-npm run refresh:test-data      # regenerate the bundled dev snapshot (list + GP)
+npm run data:fetch             # bake socrates.json + gp-active.json into public/data/
 npm run verify:propagation -w conjunction-core   # live ISS ground-track sanity check
 ```
 
@@ -165,7 +167,7 @@ npm run verify:propagation -w conjunction-core   # live ISS ground-track sanity 
 
 `npm run build` emits a **fully static site** to
 `packages/conjunction-web/dist/` — `index.html`, hashed `assets/`, the
-`textures/`, and the bundled `test-data/`. There is no server-side code and no
+`textures/`, and the baked `data/`. There is no server-side code and no
 client-side routing, so it hosts on **any static server with no rewrite or
 SPA-fallback config** — just serve the directory.
 
@@ -198,8 +200,6 @@ nginx snippet above). This is a performance nicety, not a requirement.
 
 **Data in production.** `npm run build` bakes both data files into `dist/`, so a
 deployed site needs no CelesTrak access to render conjunctions or visualize them.
-The bundled `test-data/` also ships in `dist/`, so the "Use local test data"
-fallback works in production too.
 
 ### Example: Cloudflare Pages
 
@@ -271,7 +271,6 @@ Client (Vite, must be set at build time):
 | `VITE_DATA_MODE` | `auto` | `auto` \| `baked` \| `runtime`. `baked` never networks; `runtime` never reads the baked file. |
 | `VITE_MAX_DATA_AGE_HOURS` | `8` | Age past which baked data is shown with a "fetch latest" banner. |
 | `VITE_SOCRATES_URL` | unset | Endpoint for the runtime fallback and the manual refresh. |
-| `VITE_USE_LOCAL_SOCRATES` | unset | `true` forces the bundled dev snapshot. In dev this is the default unless `VITE_USE_LIVE=true`. |
 
 ### CelesTrak courtesy
 
@@ -288,26 +287,16 @@ If you fork this, please:
 
 ## Working offline / when CelesTrak is down
 
-A SOCRATES snapshot and matching GP element sets are bundled under
-`test-data/` (served from `packages/conjunction-web/public/test-data/`).
-There are three ways to use them:
+Bake once and you are offline-capable: `npm run data:fetch` writes
+`public/data/socrates.json` and `public/data/gp-active.json`, and the app reads
+only those. Nothing about a running session needs the network.
 
-- When the live SOCRATES load fails, the app offers a **"Use local test
-  data"** button that switches both the conjunction list and GP lookups to
-  the bundled files for the session.
-- `VITE_USE_LOCAL_SOCRATES=true npm run dev` — always read the conjunction
-  list from the bundled snapshot.
-- `VITE_USE_LOCAL_GP=true npm run dev` — always read element sets from
-  `test-data/gp/{noradId}.json`.
+There is deliberately **no bundled mock snapshot**. A 10-row fixture used to
+ship for this purpose and was removed: it drifted from the real bake and let a
+dev session look healthy while proving nothing about the pipeline.
 
-Refresh the whole bundled snapshot — the conjunction list *and* the matching
-GP element sets — in one step with `npm run refresh:test-data`. It pulls the
-current SOCRATES list, keeps the top rows whose both objects have fetchable GP
-(CelesTrak first, falling back to a public TLE mirror), rewrites both
-`socrates-sample.csv` copies plus `test-data/gp/`, and prunes GP files the new
-list no longer references. If CelesTrak is rate-limiting and it can't cover a
-full snapshot, it leaves the existing files untouched — just rerun. Override the
-row count or origin with `ROWS=`, `MAX_CANDIDATES=`, `BASE=`.
+If you want the app to refuse to network under any circumstance — including a
+missing baked file — build or run with `VITE_DATA_MODE=baked`.
 
 ## License
 

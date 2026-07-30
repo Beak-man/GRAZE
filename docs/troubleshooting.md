@@ -35,28 +35,31 @@ clients, so intermittent failures are expected.
 | Symptom | Cause & fix |
 | --- | --- |
 | `HTTP 503` | Rate-limited. Back off and retry; the app caches so you rarely need to refetch. |
-| Request hangs for a long time | The full 16 MB list download is slow. `npm run refresh:test-data` avoids this by fetching only the first 64 KiB via an HTTP **Range** request. |
+| Request hangs for a long time | The full 16 MB list download is slow. `npm run data:fetch` avoids this by requesting only the first 256 KiB via an HTTP **Range** request. |
 | `ECONNREFUSED` / `fetch failed` | Network/VPN down (CelesTrak unreachable). Reconnect and retry. |
-| In the app | Live-load failures surface a **Retry** and a **"Use local test data"** button (which switches to the bundled snapshot). |
-| Running `refresh:test-data` | It's **non-destructive**: if it can't fetch the list or cover a full snapshot, it leaves the bundled files untouched — just rerun once connectivity is back. |
+| In the app | Live-load failures surface a **Retry**. |
+| `HTTP 403` from `gp.php` | Not a block: the GP endpoint refuses a repeat download inside its ~2-hour window and says so in the body. The bake treats it as "not modified". Wait for the next window. |
+| Running `data:fetch` | It's **non-destructive**: a failure leaves the existing baked files untouched, and a GP failure still writes the conjunction list. |
 
 ## `"Unexpected token '<'"` in the console
 
 Something returned **HTML where JSON was expected** — the response body starts
-with `<`. Usual causes: a missing GP file (the dev server answers a missing
-`public/` path with `index.html`), a CelesTrak error/CORS page, or a rate-limit
-notice. In local mode `fetchLocalElements`
-([`main.ts`](../packages/conjunction-web/src/main.ts)) catches this and shows a
-clean message instead — see the next item.
+with `<`. The usual cause is a missing `public/data/` file: static hosts and
+the Vite preview server answer a missing path with `index.html` and HTTP 200,
+so `response.ok` is true and the JSON parse fails.
+[`gpSource.ts`](../packages/conjunction-web/src/data/gpSource.ts) catches this
+and reports it as an absent deploy instead — see the next item.
 
-## `"No bundled GP data for NORAD …"`
+## `"Baked orbital elements could not be loaded"`
 
-A bundled conjunction references an object with no `test-data/gp/{id}.json`.
-Regenerate the snapshot so the list and GP files are consistent:
+`public/data/gp-active.json` is missing. Regenerate it:
 
 ```sh
-npm run refresh:test-data
+npm run data:fetch
 ```
+
+If the GP step reports a 403, the endpoint is inside its ~2-hour window; the
+conjunction list is still written and the elements land on the next run.
 
 This rewrites the conjunction list and fetches GP for exactly the objects it
 references (pruning the rest), so every bundled row is covered. See
@@ -85,4 +88,5 @@ The app persists the SOCRATES list (~8 h) and GP sets (~24 h) in `localStorage`
 windows serves the cached copy and makes no request. The `#data-as-of` footer
 shows when the shown data was fetched. To force a live refetch, clear the
 `graze:v1:*` keys in your browser's storage (or bump `KEY_PREFIX`). In dev,
-remember the default is the bundled snapshot unless `VITE_USE_LIVE=true`.
+Dev and production resolve data identically, so there is no dev-only default
+to account for.

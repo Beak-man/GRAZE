@@ -103,17 +103,25 @@ instead.
 
 **Client resolution order** (`packages/conjunction-web/src/data/socratesSource.ts`,
 `selectSource`) — the single place this is defined:
-1. `import.meta.env.DEV && VITE_USE_LOCAL_SOCRATES` → bundled `test-data/`.
-   **Not age-gated**, never networks. Stale local data is correct in dev; a
-   freshness check here would push dev traffic onto CelesTrak.
-2. Baked file present and `now - sourceLastModified <= VITE_MAX_DATA_AGE_HOURS`
+1. Baked file present and `now - sourceLastModified <= VITE_MAX_DATA_AGE_HOURS`
    → use it.
-3. Baked file present but stale → **render it anyway** plus a dismissible banner
+2. Baked file present but stale → **render it anyway** plus a dismissible banner
    with a manual "Fetch latest". **Never auto-fetch**: if the scheduler dies,
    auto-fetching turns every pageview into a full CSV pull, exactly when nobody
    is watching.
-4. Baked file absent → runtime fetch with a loading state. A fresh clone, not a
+3. Baked file absent → runtime fetch with a loading state. A fresh clone, not a
    failure.
+
+**Dev resolves exactly as production does.** There is no bundled-snapshot
+branch and no `VITE_USE_LOCAL_*`. The old 10-row `test-data/` fixture was
+removed because it manufactured false confidence: a dev session looked healthy
+against ten hand-picked objects while saying nothing about whether the bake
+worked. Run `npm run data:fetch` before `npm run dev`.
+
+The cost of that removal, stated plainly: with no baked file, dev now takes
+branch 3 and pulls the CSV from CelesTrak at runtime, which the fixture used to
+prevent. If dev traffic to CelesTrak becomes a problem, the fix is
+`VITE_DATA_MODE=baked` (never networks) — **not** a new mock.
 
 `VITE_DATA_MODE=baked` never networks; `runtime` never reads the baked file.
 
@@ -224,8 +232,21 @@ omission of exactly the events least understood.
   Size: 5400x2700, ~2MB JPEG. Do NOT replace with higher resolution.
 
 ## CelesTrak rate limiting
-During development, avoid fetching sort-minRange.csv repeatedly.
-The file is 16 MB and CelesTrak rate-limits aggressive clients.
-Use test-data/socrates-sample.csv for local development when possible.
-Keep a cached copy in test-data/ and add a DEV_USE_CACHE env flag
-to bypass live fetches during active development sessions.
+The SOCRATES CSVs are ~16 MB each and CelesTrak rate-limits aggressive clients.
+Bake once with `npm run data:fetch`, then develop against the baked files; they
+are gitignored, so this is a per-clone step, not a per-session one.
+
+**`gp.php` enforces a 2-hour window per client, and signals it with 403, not
+304:**
+
+```
+GP data has not updated since your last successful
+download of GROUP=active at 2026-07-30 15:50:03 UTC.
+Data is updated once every 2 hours.
+```
+
+`fetchCsv` treats that body as not-modified and never retries it — retrying a
+"you already have it" reply is what earns a real block. **Do not probe the bulk
+GP endpoint by hand to "check connectivity":** a throwaway curl consumes the
+window and the next real bake gets nothing for two hours. Verified the hard way
+on 2026-07-30. Use the SOCRATES CSV or SATCAT for a reachability check.
