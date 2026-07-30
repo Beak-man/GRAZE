@@ -6,6 +6,7 @@
  */
 import { LANGUAGES, type LanguageCode } from './dictionary.js';
 import { getLanguage, onLanguageChange, setLanguage, syncDocumentLang, t } from './translator.js';
+import { localizeAboutModal } from '../ui/aboutModal.js';
 
 function setText(selector: string, value: string): void {
   const element = document.querySelector(selector);
@@ -29,9 +30,10 @@ export function localizeStaticDom(): void {
   setText('.meta', d.app.subtitle);
   // #loading-text is owned by main.ts (it interleaves with load progress);
   // index.html's inline script sets the pre-bundle default.
-  // data-tip is the hover bubble (full paragraph); aria-label is the short name.
-  setAttr('#about-graze', 'data-tip', d.app.aboutTip);
+  // The About text lives in a dialog now, not a tooltip; the trigger keeps
+  // only its accessible name.
   setAttr('#about-graze', 'aria-label', d.tooltips.aboutGraze);
+  localizeAboutModal();
 
   setText('#lbl-regime', d.filters.regime);
   setAttr('#tip-regime', 'data-tip', d.tooltips.regime);

@@ -76,3 +76,39 @@ describe('no runtime CelesTrak GP requests', () => {
     }
   });
 });
+
+/**
+ * The About text moved from a hover tooltip to a dialog. It was lost once
+ * before (wired to the short aria-label instead of the paragraph), so the
+ * wiring is asserted rather than assumed.
+ */
+describe('About dialog', () => {
+  const html = readFileSync(path.join(SRC, '..', 'index.html'), 'utf8');
+  const modal = read(path.join(SRC, 'ui', 'aboutModal.ts'));
+
+  it('is a real dialog, not a tooltip', () => {
+    expect(html).toMatch(/id="about-modal"[^>]*role="dialog"/);
+    expect(html).toMatch(/aria-modal="true"/);
+    expect(html).toMatch(/aria-labelledby="about-modal-title"/);
+    // The trigger must no longer carry tooltip attributes.
+    const trigger = /<button[^>]*id="about-graze"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(trigger).not.toMatch(/data-tip/);
+    expect(trigger).toMatch(/aria-haspopup="dialog"/);
+  });
+
+  it('offers three independent ways out', () => {
+    // A modal with no visible exit is the classic mobile trap.
+    expect(html).toMatch(/id="about-close"/);
+    expect(modal).toMatch(/event\.target === modal/); // backdrop
+    expect(modal).toMatch(/'Escape'/);
+  });
+
+  it('renders the full About copy, not the short label', () => {
+    expect(modal).toMatch(/d\.app\.aboutTip/);
+    expect(modal).not.toMatch(/d\.tooltips\.aboutGraze/);
+  });
+
+  it('returns focus to the trigger on close', () => {
+    expect(modal).toMatch(/previouslyFocused/);
+  });
+});

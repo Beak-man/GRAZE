@@ -22,6 +22,7 @@ import type { TimeAnimatorElements } from './scene/animator.js';
 import { Sidebar } from './ui/sidebar.js';
 import { showInfoDetails, showInfoError, showInfoLoading, showInfoPlaceholder } from './ui/infoPanel.js';
 import { initTooltips } from './ui/tooltip.js';
+import { initAboutModal } from './ui/aboutModal.js';
 import {
   hideStaleBanner,
   initDataBanner,
@@ -268,6 +269,7 @@ const sidebar = new Sidebar((event) => {
 });
 
 initTooltips();
+initAboutModal();
 
 function clearVisualization(): void {
   if (unregisterTick !== null) {

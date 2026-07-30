@@ -22,6 +22,8 @@ export interface Dictionary {
     /** GRAZE backronym — kept in English in both locales (it spells the name). */
     readonly subtitle: string;
     readonly disclaimer: string;
+    /** Dialog heading for the About text. */
+    readonly aboutTitle: string;
     readonly aboutTip: string;
     readonly loading: string;
     /** Shown on the startup overlay while the globe textures download. */
@@ -166,6 +168,7 @@ export interface Dictionary {
   };
   readonly buttons: {
     readonly retry: string;
+    readonly close: string;
     readonly useLocalData: string;
     readonly retryLiveData: string;
     readonly retryLocalData: string;
@@ -178,8 +181,9 @@ const en: Dictionary = {
     disclaimer:
       '⚠ GRAZE uses publicly available GP/TLE data with SGP4 propagation. ' +
       'For educational and awareness purposes only — not for operational conjunction assessment.',
-    // Newlines are significant: the tooltip bubble renders with
+    // Newlines are significant: #about-modal-text renders with
     // `white-space: pre-line`, so these become the paragraph and bullet breaks.
+    aboutTitle: 'About GRAZE',
     aboutTip:
       'GRAZE is a browser-based 3D visualizer for predicted satellite close approaches.\n\n' +
       'Data Pipeline & Methodology:\n' +
@@ -370,6 +374,7 @@ const en: Dictionary = {
   },
   buttons: {
     retry: 'Retry',
+    close: 'Close',
     useLocalData: 'Use local test data',
     retryLiveData: 'Retry live data',
     retryLocalData: 'Retry local test data',
@@ -383,8 +388,9 @@ const es: Dictionary = {
     disclaimer:
       '⚠ GRAZE usa datos GP/TLE de acceso público con propagación SGP4. ' +
       'Solo para fines educativos y de concientización — no para evaluación operacional de conjunciones.',
-    // Los saltos de línea son significativos: el globo usa `white-space:
-    // pre-line`, así que marcan los párrafos y las viñetas.
+    // Los saltos de línea son significativos: #about-modal-text usa
+    // `white-space: pre-line`, así que marcan los párrafos y las viñetas.
+    aboutTitle: 'Acerca de GRAZE',
     aboutTip:
       'GRAZE es un visualizador 3D en el navegador de acercamientos previstos entre ' +
       'satélites.\n\n' +
@@ -583,6 +589,7 @@ const es: Dictionary = {
   },
   buttons: {
     retry: 'Reintentar',
+    close: 'Cerrar',
     useLocalData: 'Usar datos de prueba locales',
     retryLiveData: 'Reintentar datos en vivo',
     retryLocalData: 'Reintentar datos locales',
