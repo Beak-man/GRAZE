@@ -281,3 +281,87 @@ export function interpolateStateAt(
     velocityEci: lerpVector(before.velocityEci, after.velocityEci, t),
   };
 }
+
+/**
+ * Element-set epoch, ms since the Unix epoch.
+ *
+ * OMM `EPOCH` carries no timezone designator — CelesTrak emits
+ * "2026-07-28T17:05:55.732704" — and ECMAScript parses a bare date-time as
+ * LOCAL time. Left naive that shifts the epoch by the host's UTC offset (six
+ * hours on the machine this was written on) and silently corrupts every age
+ * derived from it. UTC is appended unless the string already states a zone.
+ */
+export function elementEpochMs(elements: OrbitalElements): number {
+  const raw = elements.EPOCH;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(raw);
+  return Date.parse(hasZone ? raw : `${raw}Z`);
+}
+
+/**
+ * Miss distance above which the computed geometry is not the screened event.
+ *
+ * Tied to the app's own 5 km filter ceiling: if SGP4 from these element sets
+ * puts the objects further apart than the widest conjunction the UI will show,
+ * then whatever minimum the search found is a different close approach, not a
+ * refinement of the screened one.
+ */
+export const TCA_CONSISTENCY_LIMIT_KM = 5;
+
+export interface TcaConsistency {
+  /** False when the element sets cannot reproduce the screened conjunction. */
+  reproducesScreenedEvent: boolean;
+  /** Our refined miss distance, km. */
+  computedRangeKm: number;
+  /** The miss distance the screening authority published, km. */
+  screenedRangeKm: number;
+  /** Refined TCA minus screened TCA, seconds. Signed. */
+  tcaOffsetSeconds: number;
+  /** Age of each element set at the screened TCA, hours. */
+  elementAgeHours1: number;
+  elementAgeHours2: number;
+}
+
+/**
+ * Compare a refined close approach against the screening authority that
+ * produced the event.
+ *
+ * Measured on the bundled fixtures: 7 of 10 pairs reproduce SOCRATES to within
+ * a few hundred metres with TCA offsets under half a second. The failures are
+ * element staleness, not search error — the worst is a Starlink x Kuiper pair
+ * propagated ~2 days, where the objects are 2503 km apart at the screened TCA
+ * and the implied along-track phase error is 228 s. Both constellations
+ * manoeuvre, so pre-manoeuvre elements cannot place them.
+ *
+ * A disagreement is therefore a statement about the DATA, and the UI must say
+ * so rather than presenting the computed figure as a refinement.
+ */
+export function assessTcaConsistency(params: {
+  computedRangeKm: number;
+  computedTcaEpochMs: number;
+  screenedRangeKm: number;
+  screenedTca: Date;
+  elements1: OrbitalElements;
+  elements2: OrbitalElements;
+  limitKm?: number;
+}): TcaConsistency {
+  const {
+    computedRangeKm,
+    computedTcaEpochMs,
+    screenedRangeKm,
+    screenedTca,
+    elements1,
+    elements2,
+    limitKm = TCA_CONSISTENCY_LIMIT_KM,
+  } = params;
+  const screenedMs = screenedTca.getTime();
+  const ageHours = (elements: OrbitalElements): number =>
+    (screenedMs - elementEpochMs(elements)) / 3_600_000;
+  return {
+    reproducesScreenedEvent: computedRangeKm <= limitKm,
+    computedRangeKm,
+    screenedRangeKm,
+    tcaOffsetSeconds: (computedTcaEpochMs - screenedMs) / 1000,
+    elementAgeHours1: ageHours(elements1),
+    elementAgeHours2: ageHours(elements2),
+  };
+}

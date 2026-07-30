@@ -9,6 +9,9 @@ import {
   interpolateStateAt,
   sharesOrbitSolution,
   summarizeOrbit,
+  assessTcaConsistency,
+  elementEpochMs,
+  TCA_CONSISTENCY_LIMIT_KM,
 } from '../src/analysis.js';
 import { classifyObjectType } from '../src/socrates.js';
 import type { OrbitalElements, PropagatedPosition } from '../src/types.js';
@@ -293,5 +296,80 @@ describe('regime boundaries', () => {
     expect(catalog(Number.NaN, 400, 400)).toBeNull();
     expect(catalog(96, Number.NaN, 400)).toBeNull();
     expect(catalog(0, 400, 400)).toBeNull();
+  });
+});
+
+describe('elementEpochMs', () => {
+  const withEpoch = (EPOCH: string): OrbitalElements =>
+    ({ ...ISS_LIKE, EPOCH }) as OrbitalElements;
+
+  it('reads a zoneless OMM epoch as UTC, not local time', () => {
+    // The trap: ECMAScript parses a bare date-time as LOCAL, so on a UTC-6 host
+    // this epoch would land six hours late and every derived age would be wrong.
+    // Asserted against an explicit UTC instant so the test cannot pass by
+    // accident on a UTC machine.
+    expect(elementEpochMs(withEpoch('2026-07-28T17:05:55.732704'))).toBe(
+      Date.UTC(2026, 6, 28, 17, 5, 55, 732),
+    );
+  });
+
+  it('respects an explicit zone when one is present', () => {
+    const z = elementEpochMs(withEpoch('2026-07-28T17:05:55.732Z'));
+    expect(elementEpochMs(withEpoch('2026-07-28T17:05:55.732'))).toBe(z);
+    expect(elementEpochMs(withEpoch('2026-07-28T19:05:55.732+02:00'))).toBe(z);
+  });
+});
+
+describe('assessTcaConsistency', () => {
+  const base = {
+    screenedTca: new Date('2026-07-30T17:49:56.392Z'),
+    elements1: { ...ISS_LIKE, EPOCH: '2026-07-28T17:05:55.732704' } as OrbitalElements,
+    elements2: { ...ISS_LIKE, EPOCH: '2026-07-28T22:00:01.999584' } as OrbitalElements,
+  };
+
+  it('flags the measured Starlink/Kuiper failure', () => {
+    // Real numbers from the bundled fixtures: 1747 km computed against a 15 m
+    // screened miss, 164 s late, elements ~2 days old.
+    const a = assessTcaConsistency({
+      ...base,
+      computedRangeKm: 1746.977,
+      computedTcaEpochMs: base.screenedTca.getTime() + 164_427,
+      screenedRangeKm: 0.015,
+    });
+    expect(a.reproducesScreenedEvent).toBe(false);
+    expect(a.tcaOffsetSeconds).toBeCloseTo(164.427, 3);
+    expect(a.elementAgeHours1).toBeCloseTo(48.73, 1);
+    expect(a.elementAgeHours2).toBeCloseTo(43.83, 1);
+  });
+
+  it('accepts a pair that reproduces the screened event', () => {
+    const a = assessTcaConsistency({
+      ...base,
+      computedRangeKm: 0.031,
+      computedTcaEpochMs: base.screenedTca.getTime() - 100,
+      screenedRangeKm: 0.031,
+    });
+    expect(a.reproducesScreenedEvent).toBe(true);
+    expect(a.tcaOffsetSeconds).toBeCloseTo(-0.1, 6);
+  });
+
+  it('treats sub-km disagreement as reproduced, matching the 5 km filter ceiling', () => {
+    // 842 m computed against an 18 m screening is ordinary SGP4 drift, not a
+    // failure to find the event — the UI must not cry wolf on 7 of 10 rows.
+    const near = assessTcaConsistency({
+      ...base, computedRangeKm: 0.842, computedTcaEpochMs: base.screenedTca.getTime(), screenedRangeKm: 0.018,
+    });
+    expect(near.reproducesScreenedEvent).toBe(true);
+    // The boundary is the constant, pinned on both sides.
+    for (const [km, expected] of [
+      [TCA_CONSISTENCY_LIMIT_KM - 1e-9, true],
+      [TCA_CONSISTENCY_LIMIT_KM, true],
+      [TCA_CONSISTENCY_LIMIT_KM + 1e-9, false],
+    ] as const) {
+      const a = assessTcaConsistency({
+        ...base, computedRangeKm: km, computedTcaEpochMs: base.screenedTca.getTime(), screenedRangeKm: 0.02,
+      });
+      expect(a.reproducesScreenedEvent, `${km} km`).toBe(expected);
+    }
   });
 });

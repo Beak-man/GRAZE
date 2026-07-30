@@ -27,8 +27,16 @@ export {
   getSunDirectionEci,
   getEarthRotationRadians,
   sharesOrbitSolution,
+  assessTcaConsistency,
+  elementEpochMs,
+  TCA_CONSISTENCY_LIMIT_KM,
 } from './analysis.js';
-export type { OrbitSummary, InterpolatedState, OrbitRegime } from './analysis.js';
+export type {
+  OrbitSummary,
+  InterpolatedState,
+  OrbitRegime,
+  TcaConsistency,
+} from './analysis.js';
 export {
   precessionMatrixJ2000ToDate,
   precessionAngles,
