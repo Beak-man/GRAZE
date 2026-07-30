@@ -2,7 +2,6 @@ import {
   computeCloseApproach,
   eciToThreeJs,
   fetchConjunctions,
-  fetchOrbitalElements,
   parseSocratesCsv,
   sharesOrbitSolution,
   summarizeOrbit,
@@ -45,33 +44,35 @@ import {
   selectSource,
 } from './data/socratesSource.js';
 import type { BakedSocrates, SourceConfig } from './data/socratesSource.js';
+import { GpFileMissingError, GpUnavailableError, elementsFor, loadBakedGp } from './data/gpSource.js';
+import type { BakedGp } from './data/gpSource.js';
 import { readCache, writeCache } from './cache.js';
 import { initI18n } from './i18n/localize.js';
 import { onLanguageChange, t } from './i18n/translator.js';
 import { formatRange, formatTca } from './format.js';
 
-// In dev, same-origin requests go through the Vite proxy (vite.config.ts).
-// In production we hit CelesTrak directly unless a proxy origin (e.g. the
-// bundled Cloudflare Worker, see cf-worker/) is baked in at build time via
-// VITE_CELESTRAK_BASE.
-const ENV_BASE: unknown = import.meta.env.VITE_CELESTRAK_BASE;
-const CELESTRAK_BASE_URL = import.meta.env.DEV
-  ? ''
-  : typeof ENV_BASE === 'string' && ENV_BASE !== ''
-    ? ENV_BASE
-    : 'https://celestrak.org';
+/*
+ * Orbital elements are NEVER fetched at runtime. They are baked into
+ * /data/gp-active.json at build time (see data/gpSource.ts); there is no
+ * per-object CelesTrak path left in this package, and
+ * test/noRuntimeCelestrak.test.ts fails the build if one reappears.
+ *
+ * This origin remains for the SOCRATES *conjunction list* only, on the two
+ * paths CLAUDE.md's resolution order defines: a fresh clone with no baked file,
+ * and the user explicitly clicking "Fetch latest" on the stale-data banner.
+ * Neither runs on page load or on a timer, and neither touches GP.
+ */
+const SOCRATES_FALLBACK_BASE_URL = import.meta.env.DEV ? '' : 'https://celestrak.org';
 
 const TOP_CONJUNCTIONS = 10;
 const REFRESH_INTERVAL_MS = 8 * 60 * 60 * 1000;
-// Persistent-cache freshness windows. SOCRATES regenerates a few times a day
-// (matching REFRESH_INTERVAL_MS); GP element sets change slowly, so cache them
-// longer. Reloads within these windows make no CelesTrak requests.
+// Persistent-cache freshness window for the SOCRATES list. GP has no such
+// window: it is a single baked file served with the app's own cache headers,
+// so a per-object localStorage cache no longer has anything to save.
 const SOCRATES_TTL_MS = 8 * 60 * 60 * 1000;
-const GP_TTL_MS = 24 * 60 * 60 * 1000;
 // v2 carries the upstream epoch alongside the events; the new key means any
 // v1-shaped entry is simply a miss rather than being misread.
 const SOCRATES_CACHE_KEY = `socrates:v2:${TOP_CONJUNCTIONS}:MINRANGE`;
-const gpCacheKey = (noradId: number): string => `gp:${noradId}`;
 /** Bundled SOCRATES snapshot for when CelesTrak is unreachable. */
 const LOCAL_TEST_DATA_URL = '/test-data/socrates-sample.csv';
 /** Bundled GP element sets ({noradId}.json), refreshed via npm run refresh:test-data. */
@@ -122,11 +123,6 @@ let lastDataAsOfRender: (() => string) | null = null;
 function setDataAsOf(render: () => string): void {
   lastDataAsOfRender = render;
   requireElement('data-as-of').textContent = render();
-}
-
-/** fetch() rejects with a TypeError on network and CORS failures. */
-function isNetworkOrCorsError(error: unknown): boolean {
-  return error instanceof TypeError;
 }
 
 function errorMessage(error: unknown): string {
@@ -224,22 +220,41 @@ async function fetchLocalElements(noradId: number): Promise<OrbitalElements> {
   return first;
 }
 
-/** Fetch live GP elements, serving from (and populating) the localStorage cache. */
-async function fetchLiveElements(noradId: number): Promise<OrbitalElements> {
-  const hit = readCache<OrbitalElements>(gpCacheKey(noradId), GP_TTL_MS);
-  if (hit !== null) {
-    return hit.data;
+/**
+ * The baked GP file, fetched at most once per page. Memoised as a promise so a
+ * burst of selections shares one request; the ~650 KiB download happens on the
+ * first selection rather than at page load.
+ */
+let bakedGpPromise: Promise<BakedGp> | null = null;
+function getBakedGp(): Promise<BakedGp> {
+  if (bakedGpPromise === null) {
+    bakedGpPromise = loadBakedGp();
+    // A failed load must not be cached, or one flaky request disables
+    // selection for the rest of the session.
+    bakedGpPromise.catch(() => {
+      bakedGpPromise = null;
+    });
   }
-  const elements = await fetchOrbitalElements(noradId, { baseUrl: CELESTRAK_BASE_URL });
-  writeCache(gpCacheKey(noradId), elements);
-  return elements;
+  return bakedGpPromise;
+}
+
+/**
+ * Read one object's elements from the baked file.
+ *
+ * There is NO CelesTrak fallback here, by design. An object absent from the
+ * baked catalogue throws GpUnavailableError and the row reports itself as
+ * unplottable — reaching out per object is the ~1,800-requests-per-visitor
+ * defect the bake pipeline exists to prevent.
+ */
+async function fetchBakedElements(noradId: number): Promise<OrbitalElements> {
+  const baked = await getBakedGp();
+  return elementsFor(baked, noradId);
 }
 
 function getElements(noradId: number): Promise<OrbitalElements> {
   let cached = elementsCache.get(noradId);
   if (cached === undefined) {
-    // Bundled reads stay out of the persistent cache (which is live-only).
-    cached = useLocalGp ? fetchLocalElements(noradId) : fetchLiveElements(noradId);
+    cached = useLocalGp ? fetchLocalElements(noradId) : fetchBakedElements(noradId);
     // Drop failed fetches from the cache so a retry can succeed.
     cached.catch(() => elementsCache.delete(noradId));
     elementsCache.set(noradId, cached);
@@ -292,12 +307,22 @@ async function selectConjunction(event: ConjunctionEvent): Promise<void> {
       return;
     }
     setStatus(() => t().status.gpUnavailable);
-    const withCors = isNetworkOrCorsError(error);
+    // Three distinct failures, and the distinction matters to the reader: the
+    // object simply isn't in the baked catalogue (expected for debris, and
+    // nothing to retry), the baked file itself is missing (a deploy problem
+    // affecting every row), or something else went wrong.
+    if (error instanceof GpUnavailableError) {
+      const { noradId } = error;
+      const name = noradId === event.noradId1 ? event.name1 : event.name2;
+      showInfoError(() => t().errors.gpNotBaked(name, noradId));
+      return;
+    }
     const detail = errorMessage(error);
-    showInfoError(
-      () =>
-        t().errors.couldNotFetchElements(detail) + (withCors ? ` ${t().errors.corsHelp}` : ''),
-    );
+    if (error instanceof GpFileMissingError) {
+      showInfoError(() => t().errors.gpFileMissing(detail));
+      return;
+    }
+    showInfoError(() => t().errors.couldNotFetchElements(detail));
     return;
   }
   if (token !== selectionToken) {
@@ -472,7 +497,7 @@ async function loadRuntimeConjunctions(): Promise<void> {
     const events = await fetchConjunctions({
       maxResults: TOP_CONJUNCTIONS,
       sortBy: 'MINRANGE',
-      baseUrl: CELESTRAK_BASE_URL,
+      baseUrl: SOCRATES_FALLBACK_BASE_URL,
       onMeta: ({ lastModified }) => {
         sourceEpoch = lastModified;
       },
@@ -493,8 +518,7 @@ async function loadRuntimeConjunctions(): Promise<void> {
       return;
     }
     setStatus(() => t().status.couldNotLoad);
-    const corsSuffix = isNetworkOrCorsError(error) ? ` ${t().errors.corsHelp}` : '';
-    sidebar.showMessage(t().errors.couldNotReachSocrates(errorMessage(error)) + corsSuffix, [
+    sidebar.showMessage(t().errors.couldNotReachSocrates(errorMessage(error)), [
       { label: t().buttons.retry, onAction: () => void loadConjunctions() },
       { label: t().buttons.useLocalData, onAction: () => void loadLocalTestData(true) },
     ]);
@@ -560,7 +584,7 @@ async function fetchLatestFromSource(): Promise<void> {
     const baseUrl =
       typeof RUNTIME_SOCRATES_URL === 'string' && RUNTIME_SOCRATES_URL !== ''
         ? RUNTIME_SOCRATES_URL
-        : CELESTRAK_BASE_URL;
+        : SOCRATES_FALLBACK_BASE_URL;
     let sourceEpoch: Date | null = null;
     const events = await fetchConjunctions({
       maxResults: TOP_CONJUNCTIONS,

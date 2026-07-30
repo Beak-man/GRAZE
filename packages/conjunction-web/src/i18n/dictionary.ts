@@ -140,7 +140,10 @@ export interface Dictionary {
       objectId2: string,
       socratesRange: string,
     ) => string;
-    readonly corsHelp: string;
+    /** Object has no baked elements — omitted from the bulk GP group. */
+    readonly gpNotBaked: (name: string, noradId: number) => string;
+    /** gp-active.json itself is missing or unreadable (a deploy problem). */
+    readonly gpFileMissing: (detail: string) => string;
   };
   readonly buttons: {
     readonly retry: string;
@@ -310,10 +313,15 @@ const en: Dictionary = {
       'resolved), so SGP4 propagates them to the same point and they cannot be ' +
       `separated here. SOCRATES reports ${socratesRange} using better-resolved orbits. ` +
       'Visualization skipped.',
-    corsHelp:
-      'If this keeps happening, the browser is likely blocked by CORS or a network ' +
-      'failure when calling CelesTrak directly. Deploy the bundled Cloudflare Worker ' +
-      'proxy (cf-worker/) and rebuild with VITE_CELESTRAK_BASE set to its URL — see README.md.',
+    gpNotBaked: (name, noradId) =>
+      `GP data unavailable (not in active catalog): ${name} (NORAD ${noradId}) has no ` +
+      'orbital elements in this build. The catalogue baked with the app covers active ' +
+      'payloads, so debris, rocket bodies and uncatalogued objects are absent. The ' +
+      'conjunction data above is still valid — only the 3D visualization needs elements.',
+    gpFileMissing: (detail) =>
+      `Baked orbital elements could not be loaded (${detail}). This is a deployment ` +
+      'problem rather than a missing object: /data/gp-active.json is absent or ' +
+      'unreadable, so no conjunction can be visualized until the next build.',
   },
   buttons: {
     retry: 'Retry',
@@ -488,10 +496,16 @@ const es: Dictionary = {
       'separado), por lo que SGP4 los propaga al mismo punto y no pueden distinguirse ' +
       `aquí. SOCRATES informa ${socratesRange} usando órbitas mejor resueltas. ` +
       'Se omitió la visualización.',
-    corsHelp:
-      'Si esto sigue ocurriendo, es probable que el navegador esté bloqueado por CORS o por un ' +
-      'fallo de red al llamar a CelesTrak directamente. Despliega el Cloudflare Worker incluido ' +
-      '(cf-worker/) y recompila con VITE_CELESTRAK_BASE apuntando a su URL — consulta README.md.',
+    gpNotBaked: (name, noradId) =>
+      `Datos GP no disponibles (fuera del catálogo activo): ${name} (NORAD ${noradId}) no ` +
+      'tiene elementos orbitales en esta compilación. El catálogo incluido cubre cargas ' +
+      'útiles activas, por lo que los fragmentos de basura espacial, las etapas de cohete ' +
+      'y los objetos no catalogados quedan fuera. Los datos de la conjunción siguen siendo ' +
+      'válidos — solo la visualización 3D requiere elementos.',
+    gpFileMissing: (detail) =>
+      `No se pudieron cargar los elementos orbitales incluidos (${detail}). Es un problema ` +
+      'de despliegue, no un objeto ausente: /data/gp-active.json falta o no se puede leer, ' +
+      'así que ninguna conjunción podrá visualizarse hasta la próxima compilación.',
   },
   buttons: {
     retry: 'Reintentar',
