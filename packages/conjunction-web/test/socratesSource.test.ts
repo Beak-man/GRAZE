@@ -11,6 +11,7 @@ import {
   selectSource,
 } from '../src/data/socratesSource.js';
 import type { BakedSocrates, SourceConfig } from '../src/data/socratesSource.js';
+import { LANGUAGES, translations } from '../src/i18n/dictionary.js';
 
 const NOW = new Date('2026-07-28T12:00:00Z');
 const HOUR = 3_600_000;
@@ -354,5 +355,26 @@ describe('perFileCount', () => {
 
   it('is zero when no ordering metadata exists', () => {
     expect(perFileCount(bakedFixture())).toBe(0);
+  });
+});
+
+describe('unknown-regime disclosure copy', () => {
+  it('omits the provenance split when the payload predates it', () => {
+    // A schemaVersion-3 file carries neither count. Rendering "0 analyst-range
+    // and 0 absent" would assert something we do not know.
+    for (const lang of LANGUAGES) {
+      const text = translations[lang].filters.regimeUnknownShown(7, 0, 0);
+      expect(text).not.toMatch(/\b0\b/);
+      expect(text).toMatch(/7/);
+    }
+  });
+
+  it('states the split in both languages when the counts are present', () => {
+    for (const lang of LANGUAGES) {
+      const text = translations[lang].filters.regimeUnknownShown(7, 3, 1);
+      expect(text).toContain('80000-89999');
+      expect(text).toMatch(/\b3\b/);
+      expect(text).toMatch(/\b1\b/);
+    }
   });
 });

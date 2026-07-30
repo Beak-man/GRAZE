@@ -49,7 +49,7 @@ export interface Dictionary {
     /** Shown when the regime filter has no baked data to work with. */
     readonly regimeUnavailable: string;
     /** Count of records shown despite an unclassified object. */
-    readonly regimeUnknownShown: (count: number) => string;
+    readonly regimeUnknownShown: (count: number, analyst: number, absent: number) => string;
   };
   readonly tooltips: {
     readonly regime: string;
@@ -184,9 +184,22 @@ const en: Dictionary = {
       'exist in the full SOCRATES screening run.',
     regimeUnavailable:
       'Regime filtering needs the pre-built data file and is unavailable on live-fetched data.',
-    regimeUnknownShown: (count) =>
-      `${count} record${count === 1 ? '' : 's'} include an object missing from the ` +
-      'satellite catalogue; they are shown regardless of the regime filter.',
+    regimeUnknownShown: (count, analyst, absent) => {
+      const base =
+        `${count} record${count === 1 ? '' : 's'} include an object with no catalogued ` +
+        'regime; they are shown regardless of the regime filter.';
+      // A payload baked before the provenance split carries neither count.
+      // Say nothing rather than claim "0 analyst, 0 absent".
+      if (analyst + absent === 0) {
+        return base;
+      }
+      return (
+        `${base} Of those objects, ${analyst} ${analyst === 1 ? 'is' : 'are'} ` +
+        `analyst-range (80000-89999, uncorrelated tracks) and ${absent} ` +
+        `${absent === 1 ? 'is a' : 'are'} valid catalogue ` +
+        `number${absent === 1 ? '' : 's'} not yet in our catalogue snapshot.`
+      );
+    },
   },
   tooltips: {
     regime:
@@ -347,9 +360,24 @@ const es: Dictionary = {
     regimeUnavailable:
       'El filtro por régimen orbital requiere el archivo de datos precompilado y no está ' +
       'disponible con datos obtenidos en vivo.',
-    regimeUnknownShown: (count) =>
-      `${count} registro${count === 1 ? '' : 's'} incluyen un objeto ausente del catálogo ` +
-      'de satélites; se muestran independientemente del filtro por régimen.',
+    regimeUnknownShown: (count, analyst, absent) => {
+      const base =
+        `${count} registro${count === 1 ? '' : 's'} ${count === 1 ? 'incluye' : 'incluyen'} ` +
+        'un objeto sin régimen catalogado; se muestran independientemente del filtro ' +
+        'por régimen.';
+      // Un archivo generado antes de esta división no trae ninguno de los dos
+      // recuentos. Mejor callar que afirmar «0 y 0».
+      if (analyst + absent === 0) {
+        return base;
+      }
+      return (
+        `${base} De esos objetos, ${analyst} ${analyst === 1 ? 'pertenece' : 'pertenecen'} ` +
+        `al rango de analista (80000-89999, trazas no correlacionadas) y ${absent} ` +
+        `${absent === 1 ? 'es un número' : 'son números'} de catálogo ` +
+        `${absent === 1 ? 'válido' : 'válidos'} que aún no ` +
+        `${absent === 1 ? 'figura' : 'figuran'} en nuestra instantánea del catálogo.`
+      );
+    },
   },
   tooltips: {
     regime:

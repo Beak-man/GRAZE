@@ -51,6 +51,9 @@ export class Sidebar {
   private messageActive = false;
   /** Records whose regime could not be determined from SATCAT. */
   private regimeUnknownRecords = 0;
+  /** Provenance split of those objects: analyst-range vs. not-yet-catalogued. */
+  private regimeAnalystObjects = 0;
+  private regimeAbsentObjects = 0;
   /** False when no baked regimes exist at all (runtime/local fallback). */
   private regimesAvailable = true;
 
@@ -78,12 +81,19 @@ export class Sidebar {
    * Install the regimes baked into the data file. One call, no network — this
    * replaced per-object GP lookups at runtime.
    */
-  setBakedRegimes(index: Map<number, OrbitRegime>, unknownRecords: number): void {
+  setBakedRegimes(
+    index: Map<number, OrbitRegime>,
+    unknownRecords: number,
+    analystObjects = 0,
+    absentObjects = 0,
+  ): void {
     this.regimes.clear();
     for (const [id, regime] of index) {
       this.regimes.set(id, regime);
     }
     this.regimeUnknownRecords = unknownRecords;
+    this.regimeAnalystObjects = analystObjects;
+    this.regimeAbsentObjects = absentObjects;
     this.regimesAvailable = true;
     this.setRegimeControlsEnabled(true);
     this.render();
@@ -97,6 +107,8 @@ export class Sidebar {
   setRegimesUnavailable(): void {
     this.regimes.clear();
     this.regimeUnknownRecords = 0;
+    this.regimeAnalystObjects = 0;
+    this.regimeAbsentObjects = 0;
     this.regimesAvailable = false;
     this.setRegimeControlsEnabled(false);
     this.render();
@@ -201,7 +213,11 @@ export class Sidebar {
       const show = this.regimesAvailable && this.regimeUnknownRecords > 0;
       unknownNote.classList.toggle('hidden', !show);
       unknownNote.textContent = show
-        ? t().filters.regimeUnknownShown(this.regimeUnknownRecords)
+        ? t().filters.regimeUnknownShown(
+            this.regimeUnknownRecords,
+            this.regimeAnalystObjects,
+            this.regimeAbsentObjects,
+          )
         : '';
     }
     this.table.replaceChildren(this.buildHead(), this.buildBody(visible));

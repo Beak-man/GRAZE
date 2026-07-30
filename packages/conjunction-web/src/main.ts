@@ -437,7 +437,12 @@ function showBakedEvents(baked: BakedSocrates): void {
   showLiveEvents(baked.conjunctions, asOf);
   setDataEpoch(epoch === null ? null : new Date(epoch));
   // Regimes are baked in; the filter reads them with zero network requests.
-  sidebar.setBakedRegimes(regimeIndexOf(baked), baked.regimeUnknownRecords ?? 0);
+  sidebar.setBakedRegimes(
+    regimeIndexOf(baked),
+    baked.regimeUnknownRecords ?? 0,
+    baked.regimeAnalystObjects ?? 0,
+    baked.regimeAbsentObjects ?? 0,
+  );
   setDataScope(scopeDisclosure(baked));
   // Neutral note only — our pipeline being fresh is what matters for the banner.
   setUpstreamQuiet(isUpstreamQuiet(baked));

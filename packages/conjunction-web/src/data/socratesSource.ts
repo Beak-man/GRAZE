@@ -46,6 +46,14 @@ export interface BakedSocrates {
   /** How many records have at least one unclassified object. */
   regimeUnknownRecords?: number;
   regimeUnknownObjects?: number;
+  /**
+   * Split of `regimeUnknownObjects` by provenance. Analyst-range ids
+   * (80000-89999) are uncorrelated tracks and are expected to be absent
+   * permanently; everything else is a real catalogue number our SATCAT
+   * snapshot has not caught up with. A 6-digit id implies neither.
+   */
+  regimeAnalystObjects?: number;
+  regimeAbsentObjects?: number;
 }
 
 export interface SourceConfig {

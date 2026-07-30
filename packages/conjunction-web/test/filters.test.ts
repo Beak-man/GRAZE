@@ -64,4 +64,20 @@ describe('eventPassesFilters', () => {
     const geoOnly = { ...SHOW_ALL, regimes: new Set(['GEO'] as const) };
     expect(eventPassesFilters(EVENT, geoOnly, unknownRegime)).toBe(true);
   });
+
+  it('keeps unknown-regime events visible under the strictest possible filter', () => {
+    // Every regime box unchecked. A classified event is excluded, but an
+    // unclassified one must survive — an object absent from SATCAT (an
+    // analyst track, or a catalogue number our snapshot has not caught up
+    // with) is never silently dropped.
+    const noRegimes = { ...SHOW_ALL, regimes: new Set<OrbitRegime>() };
+    expect(eventPassesFilters(EVENT, noRegimes, allLeo)).toBe(false);
+    expect(eventPassesFilters(EVENT, noRegimes, unknownRegime)).toBe(true);
+  });
+
+  it('stays unfiltered when only one of the two objects is classified', () => {
+    const noRegimes = { ...SHOW_ALL, regimes: new Set<OrbitRegime>() };
+    const halfKnown: RegimeLookup = (id) => (id === 25544 ? 'LEO' : undefined);
+    expect(eventPassesFilters(EVENT, noRegimes, halfKnown)).toBe(true);
+  });
 });
