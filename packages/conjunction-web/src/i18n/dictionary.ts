@@ -130,20 +130,15 @@ export interface Dictionary {
     readonly propagationFailed: string;
     readonly sharedOrbitSolution: string;
     readonly fetchingSocrates: string;
-    readonly loadingLocal: string;
     readonly couldNotLoad: string;
-    readonly couldNotLoadLocal: string;
     readonly topConjunctions: (count: number) => string;
-    readonly localConjunctions: (count: number, withGp: boolean) => string;
     readonly dataAsOf: (time: string) => string;
-    readonly dataAsOfLocal: string;
   };
   readonly errors: {
     readonly couldNotFetchElements: (detail: string) => string;
     readonly propagationFailedDetail: (detail: string) => string;
     readonly couldNotReachSocrates: (detail: string) => string;
     readonly couldNotLoadLocalData: (detail: string) => string;
-    readonly noBundledGp: (noradId: number) => string;
     /** Upstream publishes one orbit solution for both objects — see sharesOrbitSolution. */
     readonly sharedOrbitSolution: (
       objectId1: string,
@@ -169,9 +164,6 @@ export interface Dictionary {
   readonly buttons: {
     readonly retry: string;
     readonly close: string;
-    readonly useLocalData: string;
-    readonly retryLiveData: string;
-    readonly retryLocalData: string;
   };
 }
 
@@ -319,16 +311,10 @@ const en: Dictionary = {
     propagationFailed: 'Propagation failed.',
     sharedOrbitSolution: 'Objects share one orbit solution.',
     fetchingSocrates: 'Fetching SOCRATES conjunction data…',
-    loadingLocal: 'Loading bundled test data…',
     couldNotLoad: 'Could not load conjunction data.',
-    couldNotLoadLocal: 'Could not load local test data.',
     topConjunctions: (count) =>
       `Top ${count} conjunctions by miss distance. Click one to visualize.`,
-    localConjunctions: (count, withGp) =>
-      `${count} conjunctions from local test data` +
-      `${withGp ? ' (orbits from bundled GP files)' : ''}. Click one to visualize.`,
     dataAsOf: (time) => `Data as of: ${time}`,
-    dataAsOfLocal: 'Data as of: bundled test snapshot (not live)',
   },
   errors: {
     couldNotFetchElements: (detail) =>
@@ -338,10 +324,6 @@ const en: Dictionary = {
       `object decayed): ${detail} Visualization skipped.`,
     couldNotReachSocrates: (detail) => `Could not reach CelesTrak SOCRATES: ${detail}`,
     couldNotLoadLocalData: (detail) => `Could not load the bundled test data: ${detail}`,
-    noBundledGp: (noradId) =>
-      `No bundled GP data for NORAD ${noradId}. This object is in the test snapshot ` +
-      'but has no test-data/gp file — run "npm run refresh:test-data", or use live data ' +
-      'with VITE_USE_LIVE=true.',
     sharedOrbitSolution: (objectId1, objectId2, socratesRange) =>
       'CelesTrak publishes a single shared orbit solution for these two objects ' +
       `(${objectId1} and ${objectId2} are pieces of the same launch, not yet individually ` +
@@ -375,9 +357,6 @@ const en: Dictionary = {
   buttons: {
     retry: 'Retry',
     close: 'Close',
-    useLocalData: 'Use local test data',
-    retryLiveData: 'Retry live data',
-    retryLocalData: 'Retry local test data',
   },
 };
 
@@ -532,16 +511,10 @@ const es: Dictionary = {
     propagationFailed: 'Falló la propagación.',
     sharedOrbitSolution: 'Los objetos comparten una solución orbital.',
     fetchingSocrates: 'Obteniendo datos de conjunciones de SOCRATES…',
-    loadingLocal: 'Cargando datos de prueba incluidos…',
     couldNotLoad: 'No se pudieron cargar los datos de conjunciones.',
-    couldNotLoadLocal: 'No se pudieron cargar los datos de prueba locales.',
     topConjunctions: (count) =>
       `Las ${count} conjunciones con menor distancia de cruce. Haz clic en una para visualizarla.`,
-    localConjunctions: (count, withGp) =>
-      `${count} conjunciones de datos de prueba locales` +
-      `${withGp ? ' (órbitas de archivos GP incluidos)' : ''}. Haz clic en una para visualizarla.`,
     dataAsOf: (time) => `Datos actualizados: ${time}`,
-    dataAsOfLocal: 'Datos: instantánea de prueba incluida (no en vivo)',
   },
   errors: {
     couldNotFetchElements: (detail) =>
@@ -551,10 +524,6 @@ const es: Dictionary = {
       `el objeto reentró): ${detail} Se omitió la visualización.`,
     couldNotReachSocrates: (detail) => `No se pudo conectar con CelesTrak SOCRATES: ${detail}`,
     couldNotLoadLocalData: (detail) => `No se pudieron cargar los datos de prueba incluidos: ${detail}`,
-    noBundledGp: (noradId) =>
-      `No hay datos GP incluidos para el NORAD ${noradId}. Este objeto está en la instantánea de ` +
-      'prueba pero no tiene archivo test-data/gp — ejecuta "npm run refresh:test-data", o usa ' +
-      'datos en vivo con VITE_USE_LIVE=true.',
     sharedOrbitSolution: (objectId1, objectId2, socratesRange) =>
       'CelesTrak publica una única solución orbital compartida para estos dos objetos ' +
       `(${objectId1} y ${objectId2} son piezas del mismo lanzamiento, aún sin resolver por ` +
@@ -590,9 +559,6 @@ const es: Dictionary = {
   buttons: {
     retry: 'Reintentar',
     close: 'Cerrar',
-    useLocalData: 'Usar datos de prueba locales',
-    retryLiveData: 'Reintentar datos en vivo',
-    retryLocalData: 'Reintentar datos locales',
   },
 };
 

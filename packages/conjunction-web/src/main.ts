@@ -75,31 +75,16 @@ const SOCRATES_TTL_MS = 8 * 60 * 60 * 1000;
 // v2 carries the upstream epoch alongside the events; the new key means any
 // v1-shaped entry is simply a miss rather than being misread.
 const SOCRATES_CACHE_KEY = `socrates:v2:${TOP_CONJUNCTIONS}:MINRANGE`;
-/** Bundled SOCRATES snapshot for when CelesTrak is unreachable. */
-const LOCAL_TEST_DATA_URL = '/test-data/socrates-sample.csv';
-/** Bundled GP element sets ({noradId}.json), refreshed via npm run refresh:test-data. */
-const LOCAL_GP_BASE_URL = '/test-data/gp';
-
-function envFlag(value: unknown): boolean {
-  return value === 'true';
-}
-
-// Dev builds default to the bundled test data so routine `npm run dev` never
-// touches CelesTrak (they rate-limit aggressive clients). Opt back into live
-// requests when you specifically need to exercise the API: VITE_USE_LIVE=true.
-// Production is unaffected. The explicit VITE_USE_LOCAL_* switches still force
-// bundled data in any mode (e.g. while rate-limited in a live build).
-const DEV_DEFAULT_LOCAL = import.meta.env.DEV && !envFlag(import.meta.env.VITE_USE_LIVE);
-const USE_LOCAL_SOCRATES = envFlag(import.meta.env.VITE_USE_LOCAL_SOCRATES) || DEV_DEFAULT_LOCAL;
-let useLocalGp = envFlag(import.meta.env.VITE_USE_LOCAL_GP) || DEV_DEFAULT_LOCAL;
-
-// Data-source policy. useLocalSocrates carries the *effective* flag, so the
-// long-standing dev default (bundled data unless VITE_USE_LIVE=true) keeps
-// working alongside an explicit VITE_USE_LOCAL_SOCRATES.
-const sourceConfig: SourceConfig = {
-  ...readSourceConfig(import.meta.env as unknown as Record<string, unknown>, import.meta.env.DEV),
-  useLocalSocrates: USE_LOCAL_SOCRATES,
-};
+/*
+ * Dev and production read exactly the same files. There is no bundled mock
+ * snapshot: it diverged from the real bake, and a dev session that looked
+ * healthy against ten hand-picked fixtures said nothing about whether the
+ * pipeline actually works. Run `npm run data:fetch` before `npm run dev`.
+ */
+const sourceConfig: SourceConfig = readSourceConfig(
+  import.meta.env as unknown as Record<string, unknown>,
+  import.meta.env.DEV,
+);
 /** Endpoint used only by the runtime fallback and the manual refresh. */
 const RUNTIME_SOCRATES_URL: unknown = import.meta.env.VITE_SOCRATES_URL;
 
@@ -195,33 +180,6 @@ let loadToken = 0;
 // 8-hour SOCRATES refresh.
 const elementsCache = new Map<number, Promise<OrbitalElements>>();
 
-/** Load a bundled element set; fails clearly for objects not in test-data/gp. */
-async function fetchLocalElements(noradId: number): Promise<OrbitalElements> {
-  const missingMessage = t().errors.noBundledGp(noradId);
-  const response = await fetch(`${LOCAL_GP_BASE_URL}/${noradId}.json`);
-  if (!response.ok) {
-    throw new Error(`${missingMessage} (HTTP ${response.status})`);
-  }
-  // The dev server answers a missing public file with index.html (HTTP 200),
-  // so a body that isn't valid JSON means the file genuinely isn't there —
-  // surface the actionable message rather than a raw "Unexpected token '<'".
-  const body = await response.text();
-  let data: unknown;
-  try {
-    data = JSON.parse(body);
-  } catch {
-    throw new Error(missingMessage);
-  }
-  if (!Array.isArray(data) || data.length === 0) {
-    throw new Error(`Bundled GP file for NORAD ${noradId} is empty`);
-  }
-  const [first] = data as OrbitalElements[];
-  if (first === undefined) {
-    throw new Error(`Bundled GP file for NORAD ${noradId} is empty`);
-  }
-  return first;
-}
-
 /**
  * The baked GP file, fetched at most once per page. Memoised as a promise so a
  * burst of selections shares one request; the ~650 KiB download happens on the
@@ -256,7 +214,7 @@ async function fetchBakedElements(noradId: number): Promise<OrbitalElements> {
 function getElements(noradId: number): Promise<OrbitalElements> {
   let cached = elementsCache.get(noradId);
   if (cached === undefined) {
-    cached = useLocalGp ? fetchLocalElements(noradId) : fetchBakedElements(noradId);
+    cached = fetchBakedElements(noradId);
     // Drop failed fetches from the cache so a retry can succeed.
     cached.catch(() => elementsCache.delete(noradId));
     elementsCache.set(noradId, cached);
@@ -451,8 +409,6 @@ async function loadConjunctions(): Promise<void> {
   );
 
   switch (selection.kind) {
-    case 'local':
-      return loadLocalTestData(false);
     case 'baked':
       if (baked === null) {
         // Only reachable with mode=baked and nothing baked: by contract this
@@ -543,56 +499,11 @@ async function loadRuntimeConjunctions(): Promise<void> {
     setStatus(() => t().status.couldNotLoad);
     sidebar.showMessage(t().errors.couldNotReachSocrates(errorMessage(error)), [
       { label: t().buttons.retry, onAction: () => void loadConjunctions() },
-      { label: t().buttons.useLocalData, onAction: () => void loadLocalTestData(true) },
     ]);
   } finally {
     if (token === loadToken) {
       indicator.classList.add('hidden');
     }
-  }
-}
-
-/**
- * Offline fallback: load the bundled SOCRATES snapshot instead of live data.
- * When switchGpToLocal is set (the "Use local test data" button), GP element
- * fetches also switch to the bundled test-data/gp files, so the whole
- * analysis works offline; objects missing from that set fail per row with a
- * clear message.
- */
-async function loadLocalTestData(switchGpToLocal: boolean): Promise<void> {
-  const token = ++loadToken;
-  if (switchGpToLocal && !useLocalGp) {
-    useLocalGp = true;
-    elementsCache.clear();
-  }
-  setStatus(() => t().status.loadingLocal);
-  try {
-    const response = await fetch(LOCAL_TEST_DATA_URL);
-    if (!response.ok) {
-      throw new Error(`${response.status} ${response.statusText}`);
-    }
-    const events = parseSocratesCsv(await response.text(), TOP_CONJUNCTIONS);
-    if (token !== loadToken) {
-      return;
-    }
-    sidebar.setEvents(events);
-    setDataAsOf(() => t().status.dataAsOfLocal);
-    const withGp = useLocalGp;
-    setStatus(() => t().status.localConjunctions(events.length, withGp));
-    // The bundled snapshot carries no upstream epoch; render the row as unknown
-    // rather than implying the fetch time is the data time.
-    setDataEpoch(null);
-    setDataScope(null);
-    sidebar.setRegimesUnavailable();
-    } catch (error) {
-    if (token !== loadToken) {
-      return;
-    }
-    setStatus(() => t().status.couldNotLoadLocal);
-    sidebar.showMessage(t().errors.couldNotLoadLocalData(errorMessage(error)), [
-      { label: t().buttons.retryLiveData, onAction: () => void loadConjunctions() },
-      { label: t().buttons.retryLocalData, onAction: () => void loadLocalTestData(switchGpToLocal) },
-    ]);
   }
 }
 

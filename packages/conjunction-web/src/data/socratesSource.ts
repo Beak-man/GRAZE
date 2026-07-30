@@ -60,7 +60,6 @@ export interface SourceConfig {
   mode: DataMode;
   maxAgeHours: number;
   isDev: boolean;
-  useLocalSocrates: boolean;
 }
 
 /** What the baked file looks like to the decision, or null when absent. */
@@ -73,8 +72,6 @@ export interface BakedProbe {
 }
 
 export type Selection =
-  /** Bundled dev snapshot. Never networks, never age-checked. */
-  | { kind: 'local' }
   /** Baked file, fresh enough to use as-is. */
   | { kind: 'baked'; ageMs: number | null }
   /** Baked file past MAX_AGE: still rendered, with an opt-in refresh offered. */
@@ -115,17 +112,16 @@ export function readSourceConfig(env: Record<string, unknown>, isDev: boolean): 
     mode: parseMode(env['VITE_DATA_MODE']),
     maxAgeHours: parsePositiveNumber(env['VITE_MAX_DATA_AGE_HOURS'], DEFAULT_MAX_AGE_HOURS),
     isDev,
-    useLocalSocrates: env['VITE_USE_LOCAL_SOCRATES'] === 'true',
   };
 }
 
 /**
  * Pure source resolution.
  *
- * Order matters, and two branches are deliberate rather than obvious:
- *  - The dev/local branch is checked first and is NOT age-gated. Stale bundled
- *    data is the correct dev behaviour; adding a freshness check here would
- *    push routine dev traffic onto CelesTrak, the exact opposite of the intent.
+ * Dev and production resolve identically — there is no bundled-snapshot branch
+ * any more, so what a developer sees is what a visitor sees.
+ *
+ * One branch is deliberate rather than obvious:
  *  - A stale baked file still renders (`baked-stale`). The caller offers a
  *    manual refresh; it must not auto-fetch. If the scheduler dies, auto-fetch
  *    would turn every pageview into a full CSV pull — precisely the failure
@@ -138,9 +134,6 @@ export function selectSource(
 ): Selection {
   if (config.mode === 'runtime') {
     return { kind: 'runtime' }; // never reads the baked file
-  }
-  if (config.isDev && config.useLocalSocrates) {
-    return { kind: 'local' };
   }
   if (baked === null) {
     // mode=baked never networks, even with nothing to show.

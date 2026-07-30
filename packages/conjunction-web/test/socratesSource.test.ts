@@ -21,7 +21,6 @@ function config(overrides: Partial<SourceConfig> = {}): SourceConfig {
     mode: 'auto',
     maxAgeHours: DEFAULT_MAX_AGE_HOURS,
     isDev: false,
-    useLocalSocrates: false,
     ...overrides,
   };
 }
@@ -32,29 +31,22 @@ function agedBy(hours: number): { generatedAt: string } {
 }
 
 describe('selectSource', () => {
-  it('branch 1: dev + VITE_USE_LOCAL_SOCRATES uses bundled data', () => {
-    const selection = selectSource(
-      config({ isDev: true, useLocalSocrates: true }),
-      agedBy(1),
-      NOW,
-    );
-    expect(selection.kind).toBe('local');
+  it('resolves identically in dev and in production', () => {
+    // The bundled-snapshot branch is gone: a dev session that looked healthy
+    // against ten hand-picked fixtures said nothing about the real pipeline.
+    // What a developer sees must be what a visitor sees.
+    for (const probe of [agedBy(1), agedBy(30), null]) {
+      expect(selectSource(config({ isDev: true }), probe, NOW).kind).toBe(
+        selectSource(config({ isDev: false }), probe, NOW).kind,
+      );
+    }
   });
 
-  it('branch 1 is NOT age-gated: very stale local data still stays local', () => {
-    // The point of the guard: a freshness check here would push routine dev
-    // traffic onto CelesTrak, which is what the whole refactor exists to avoid.
-    const selection = selectSource(
-      config({ isDev: true, useLocalSocrates: true }),
-      agedBy(24 * 365),
-      NOW,
+  it('never returns a bundled-snapshot selection', () => {
+    const kinds = [agedBy(1), agedBy(30), agedBy(24 * 365), null].flatMap((probe) =>
+      [true, false].map((isDev) => selectSource(config({ isDev }), probe, NOW).kind),
     );
-    expect(selection.kind).toBe('local');
-  });
-
-  it('branch 1 holds even with no baked file at all (no network fallback)', () => {
-    const selection = selectSource(config({ isDev: true, useLocalSocrates: true }), null, NOW);
-    expect(selection.kind).toBe('local');
+    expect(kinds).not.toContain('local');
   });
 
   it('branch 2: fresh baked file is used', () => {
@@ -90,13 +82,10 @@ describe('selectSource', () => {
     expect(selectSource(config({ mode: 'runtime' }), agedBy(1), NOW).kind).toBe('runtime');
   });
 
-  it('mode=runtime wins even in dev with local data requested', () => {
-    const selection = selectSource(
-      config({ mode: 'runtime', isDev: true, useLocalSocrates: true }),
-      agedBy(1),
-      NOW,
+  it('mode=runtime wins in dev too', () => {
+    expect(selectSource(config({ mode: 'runtime', isDev: true }), agedBy(1), NOW).kind).toBe(
+      'runtime',
     );
-    expect(selection.kind).toBe('runtime');
   });
 
   it('an undated or unparseable baked file is usable but never stale', () => {
@@ -104,14 +93,6 @@ describe('selectSource', () => {
     expect(selectSource(config(), { generatedAt: 'not-a-date' }, NOW).kind).toBe('baked');
   });
 
-  it('production ignores useLocalSocrates (the dev bypass is dev-only)', () => {
-    const selection = selectSource(
-      config({ isDev: false, useLocalSocrates: true }),
-      agedBy(1),
-      NOW,
-    );
-    expect(selection.kind).toBe('baked');
-  });
 });
 
 describe('readSourceConfig', () => {
@@ -119,7 +100,6 @@ describe('readSourceConfig', () => {
     const parsed = readSourceConfig({}, false);
     expect(parsed.mode).toBe('auto');
     expect(parsed.maxAgeHours).toBe(DEFAULT_MAX_AGE_HOURS);
-    expect(parsed.useLocalSocrates).toBe(false);
   });
 
   it('reads each supported override', () => {
@@ -127,7 +107,6 @@ describe('readSourceConfig', () => {
       {
         VITE_DATA_MODE: 'runtime',
         VITE_MAX_DATA_AGE_HOURS: '3',
-        VITE_USE_LOCAL_SOCRATES: 'true',
       },
       true,
     );
@@ -135,7 +114,6 @@ describe('readSourceConfig', () => {
       mode: 'runtime',
       maxAgeHours: 3,
       isDev: true,
-      useLocalSocrates: true,
     });
   });
 
