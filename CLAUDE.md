@@ -121,10 +121,12 @@ instead.
 inactivity.** If the stale-data banner appears in production, check whether the
 schedule was disabled before debugging anything else.
 
-**CI caches both `.cache/` and the baked data file.** Caching only the ETag
+**CI caches both `.cache/` and the baked data files.** Caching only the ETag
 metadata causes 304 responses with no file to reuse — the script guards against
 this by sending an unconditional GET when validators exist but the output file
-does not, but the cache should still carry both.
+does not, but the cache should still carry both. There are now **two** baked
+artifacts (`socrates.json` and `gp-active.json`); the workflow's cache path
+still names only the first, so add the second next time it is edited.
 
 **GitHub Actions caches are evicted after 7 days without access, and a
 `restore-keys` match counts as access.** With the 8-hour cron the chain renews
@@ -139,11 +141,42 @@ visitor who clicks "Fetch latest" is hitting CelesTrak directly. The workflow
 pings `secrets.HEALTHCHECK_URL` after a successful deploy for exactly this
 reason; the step self-skips when the secret is absent, so forks are unaffected.
 
+## Zero runtime CelesTrak requests for orbital elements
+GP elements are baked at build time into
+`packages/conjunction-web/public/data/gp-active.json` from **one bulk request
+per group** (`gp.php?GROUP=active&FORMAT=json`), joined in memory against the
+objects the conjunction set actually references. The client reads that file and
+**never** calls `gp.php?CATNR=<id>`.
+
+- Groups live in `GP_GROUPS` (`scripts/fetch-socrates.mjs`). Widening coverage
+  is a config change; each entry costs exactly one request per build.
+- `active` excludes debris, rocket bodies, analyst tracks and decayed payloads.
+  Measured on the 1360-record bake: 203 of 1575 objects absent → **405 rows
+  (29.8%) cannot be visualized**. Those rows say so; there is deliberately **no
+  per-object fallback**, which is the ~1,838-requests-per-visitor defect this
+  pipeline exists to prevent.
+- The GP file is **separate from socrates.json on purpose** (~422 B/record,
+  ~650 KiB total vs. socrates.json's 365 KiB) and fetched lazily on the first
+  row selection, so page load is unaffected.
+- `packages/conjunction-web/test/noRuntimeCelestrak.test.ts` fails the build if
+  a `gp.php`/`CATNR` URL or a `fetchOrbitalElements` import reappears in the web
+  package. `fetchOrbitalElements` still exists in conjunction-core for Node-side
+  scripts; it must not be called from the browser.
+
+**The unchanged-sources shortcut must also check that gp-active.json exists.**
+CI can restore `.cache/` and `socrates.json` while the GP artifact is missing;
+skipping the rebuild then would leave the app with no elements at all.
+
 ## CORS
 CelesTrak returns `Access-Control-Allow-Origin: *` on SOCRATES endpoints,
-verified 2026-07-29. No proxy is required; `VITE_CELESTRAK_BASE` is an unused
-seam kept so a fork, or a future tightening, is a config change rather than a
-code change.
+verified 2026-07-29. This now applies to the **conjunction list only**, on the
+two paths the resolution order defines: a fresh clone with no baked file, and an
+explicit "Fetch latest" click. Neither runs on page load. No proxy is required.
+
+The bundled Cloudflare Worker and `VITE_CELESTRAK_BASE` were removed once GP
+baking landed — with elements baked, there is no cross-origin request left worth
+proxying. `.github/workflows/deploy.yml` still passes `VITE_CELESTRAK_BASE`; it
+is now an unread no-op and can be dropped next time the workflow is touched.
 
 Re-run this before assuming a CORS failure is a code bug:
 

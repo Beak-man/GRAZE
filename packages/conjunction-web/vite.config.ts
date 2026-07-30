@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite';
 
-// CelesTrak endpoints are proxied through the dev server so the app can use
-// same-origin requests (baseUrl: '') and avoid any CORS surprises.
+// SOCRATES is proxied through the dev server so the app can use same-origin
+// requests (baseUrl: '') and avoid any CORS surprises. Only /SOCRATES is
+// proxied: orbital elements are baked into /data/gp-active.json at build time,
+// so nothing requests /NORAD/elements/gp.php any more.
 const celestrakProxy = {
   target: 'https://celestrak.org',
   changeOrigin: true,
@@ -15,7 +17,6 @@ export default defineConfig({
   server: {
     proxy: {
       '/SOCRATES': celestrakProxy,
-      '/NORAD': celestrakProxy,
     },
   },
 });

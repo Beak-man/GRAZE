@@ -78,17 +78,28 @@ object's GP orbital elements — but *when* and *from where* depends on the mode
 **Development (`npm run dev`)** defaults to the bundled `test-data/` snapshot and
 makes **no** CelesTrak requests, to spare the rate limiter while iterating. Opt
 into live data with `VITE_USE_LIVE=true npm run dev`; requests then go
-same-origin through the Vite proxy (`/SOCRATES`, `/NORAD` → celestrak.org), so
-there are no CORS concerns.
+same-origin through the Vite proxy (`/SOCRATES` → celestrak.org), so there are
+no CORS concerns. GP elements are never fetched in dev either: they come from
+the bundled `test-data/gp/` snapshot.
 
-**Production** always uses live CelesTrak, fronted by a `localStorage` cache: the
-conjunction list is cached ~8 h and GP sets ~24 h, so a reload within those
-windows makes no network requests (the `#data-as-of` footer shows when the shown
-data was fetched). Requests hit `https://celestrak.org` directly, or the bundled
-Cloudflare Worker if `VITE_CELESTRAK_BASE` is set — the Worker edge-caches with
-matching 8 h / 24 h TTLs as a backstop for cold clients. If a live load fails,
-the app offers a **"Use local test data"** button that falls back to the bundled
-snapshot.
+**Production makes zero CelesTrak requests for orbital elements.** Both the
+conjunction list (`/data/socrates.json`) and the GP element sets
+(`/data/gp-active.json`) are baked at build time by
+`scripts/fetch-socrates.mjs`. Clicking a row reads elements from the baked file —
+there is no per-object `gp.php?CATNR=` request, which previously meant two
+CelesTrak calls per click.
+
+The bulk GP source is CelesTrak's `GROUP=active` group, one request per build.
+It does not cover debris, rocket bodies or uncatalogued objects, so rows whose
+objects are absent report *"GP data unavailable (not in active catalog)"* rather
+than falling back to the network. The conjunction data for those rows is still
+valid; only the 3D visualization needs elements.
+
+CelesTrak is still reachable on exactly two SOCRATES-list paths, neither of which
+runs on page load: a fresh clone with no baked file, and the user explicitly
+clicking **"Fetch latest"** on the stale-data banner. The list is cached ~8 h in
+`localStorage`; the `#data-as-of` footer shows when the shown data is from. If a
+load fails, a **"Use local test data"** button falls back to the bundled snapshot.
 
 See **[docs/data-flow.md](docs/data-flow.md)** for the full picture — the caching
 layers, the load/decision flowcharts, every environment flag, and how the bundled
@@ -111,9 +122,11 @@ specifically need to exercise the live API, opt in:
 VITE_USE_LIVE=true npm run dev
 ```
 
-The dev server proxies `/SOCRATES` and `/NORAD` to celestrak.org
+The dev server proxies `/SOCRATES` to celestrak.org
 (see `packages/conjunction-web/vite.config.ts`), so there are no CORS
-concerns in development.
+concerns in development. `/NORAD` is no longer proxied — orbital elements come
+from the bundled `test-data/gp/` snapshot in dev and from the baked
+`/data/gp-active.json` in production.
 
 ### Production build & preview
 
@@ -130,9 +143,10 @@ npm run preview -w conjunction-web   # serve that build locally to try the produ
 | --- | --- | --- |
 | Served by | Vite dev server (hot reload) | any static host / web server |
 | Data source (default) | bundled `test-data/` snapshot — no network | live CelesTrak |
-| CelesTrak requests | none by default (`VITE_USE_LIVE=true` to opt in) | on load / every ~8 h |
-| Caching | none (always fresh from disk) | `localStorage` — list ~8 h, GP ~24 h |
-| CORS | none — same-origin Vite proxy | direct to celestrak.org, or a proxy (`VITE_CELESTRAK_BASE`) |
+| CelesTrak requests | none by default (`VITE_USE_LIVE=true` to opt in) | none for GP (baked); SOCRATES list only on a fresh clone or manual "Fetch latest" |
+| Orbital elements | bundled `test-data/gp/` | baked `/data/gp-active.json` |
+| Caching | none (always fresh from disk) | `localStorage` — list ~8 h |
+| CORS | none — same-origin Vite proxy | not applicable to GP; SOCRATES sends a plain GET |
 | Hot reload | yes | n/a |
 
 For *why* and the full caching story, see
@@ -182,13 +196,10 @@ nginx snippet above). This is a performance nicety, not a requirement.
 `base: '/graze/'` in `packages/conjunction-web/vite.config.ts` or
 `vite build --base=/graze/`.
 
-**Data in production.** The app fetches live `https://celestrak.org` directly.
-If the browser is blocked by CORS, bake in a proxy at build time with
-`VITE_CELESTRAK_BASE=<proxy-url>` — the bundled [Cloudflare Worker](#cors-proxy-cloudflare-worker)
-is one option, but *any* reverse proxy that forwards `/SOCRATES` and `/NORAD`
-and adds an `Access-Control-Allow-Origin` header works. The bundled `test-data/`
-also ships in `dist/`, so the "Use local test data" fallback works in production
-too.
+**Data in production.** `npm run build` bakes both data files into `dist/`, so a
+deployed site needs no CelesTrak access to render conjunctions or visualize them.
+The bundled `test-data/` also ships in `dist/`, so the "Use local test data"
+fallback works in production too.
 
 ### Example: Cloudflare Pages
 
@@ -198,8 +209,7 @@ too.
    - **Build command:** `npm run build`
    - **Build output directory:** `packages/conjunction-web/dist`
 3. Deploy. Assets are copied into `dist/` automatically, and `public/_headers`
-   applies the long-lived cache headers. If you also need the CORS proxy, deploy
-   the Worker below and set `VITE_CELESTRAK_BASE`.
+   applies the long-lived cache headers.
 
 ## Deploying elsewhere
 
@@ -262,7 +272,6 @@ Client (Vite, must be set at build time):
 | `VITE_MAX_DATA_AGE_HOURS` | `8` | Age past which baked data is shown with a "fetch latest" banner. |
 | `VITE_SOCRATES_URL` | unset | Endpoint for the runtime fallback and the manual refresh. |
 | `VITE_USE_LOCAL_SOCRATES` | unset | `true` forces the bundled dev snapshot. In dev this is the default unless `VITE_USE_LIVE=true`. |
-| `VITE_CELESTRAK_BASE` | unset (direct) | Optional CORS proxy origin. Not required today — see below. |
 
 ### CelesTrak courtesy
 
@@ -299,30 +308,6 @@ current SOCRATES list, keeps the top rows whose both objects have fetchable GP
 list no longer references. If CelesTrak is rate-limiting and it can't cover a
 full snapshot, it leaves the existing files untouched — just rerun. Override the
 row count or origin with `ROWS=`, `MAX_CANDIDATES=`, `BASE=`.
-
-## CORS proxy (Cloudflare Worker)
-
-Only needed if the browser is CORS-blocked calling CelesTrak directly, and it
-needn't be a Worker — any reverse proxy that forwards `/SOCRATES` and `/NORAD`
-and adds an `Access-Control-Allow-Origin` header will do. The bundled
-implementation is a ~20-line proxy in [`cf-worker/worker.js`](cf-worker/worker.js):
-it forwards only the SOCRATES and GP paths to celestrak.org, edge-caches them
-with the same TTLs as the client (8 h for SOCRATES, 24 h for GP), and adds
-`Access-Control-Allow-Origin: *`.
-
-```sh
-cd cf-worker
-npx wrangler deploy        # prints the worker URL, e.g. https://graze-celestrak-proxy.<you>.workers.dev
-```
-
-Then rebuild the site with the proxy baked in:
-
-```sh
-VITE_CELESTRAK_BASE=https://graze-celestrak-proxy.<you>.workers.dev npm run build
-```
-
-(In the Cloudflare Pages dashboard, add `VITE_CELESTRAK_BASE` as a build
-environment variable instead.)
 
 ## License
 
